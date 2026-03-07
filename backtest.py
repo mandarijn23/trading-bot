@@ -1,13 +1,8 @@
 """
-Backtester
------------
-Tests the RSI strategy on historical Binance data
-WITHOUT spending any real money.
-
+Multi-pair Backtester
+----------------------
+Tests the RSI + 200 MA strategy across BTC, ETH, and SOL.
 Run:  python backtest.py
-
-Tip: Tweak RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT in config.py
-     and re-run to find better settings.
 """
 
 import ccxt
@@ -16,8 +11,8 @@ import pandas as pd
 import config
 from strategy import calculate_rsi
 
-# ── Fetch historical data ──────────────────────────────────────
-def fetch_history(symbol: str, timeframe: str, limit: int = 500) -> pd.DataFrame:
+
+def fetch_history(symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
     exchange = ccxt.binance({"enableRateLimit": True})
     raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df  = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -25,45 +20,50 @@ def fetch_history(symbol: str, timeframe: str, limit: int = 500) -> pd.DataFrame
     return df
 
 
-# ── Run backtest ───────────────────────────────────────────────
-def backtest(df: pd.DataFrame) -> dict:
-    closes = df["close"]
-    rsi    = calculate_rsi(closes, config.RSI_PERIOD)
+def backtest_symbol(df: pd.DataFrame, symbol: str) -> dict:
+    closes  = df["close"]
+    rsi     = calculate_rsi(closes, config.RSI_PERIOD)
+    ma200   = closes.rolling(200).mean()
 
-    capital    = 1000.0   # Start with $1000 USDT (simulated)
-    position   = 0.0      # Coins held
-    entry      = 0.0
-    trades     = []
+    capital        = 1000.0
+    position       = 0.0
+    entry          = 0.0
+    trailing_stop  = 0.0
+    peak_price     = 0.0
+    trades         = []
 
-    for i in range(config.RSI_PERIOD + 1, len(df)):
-        price     = closes.iloc[i]
-        prev_rsi  = rsi.iloc[i - 1]
-        curr_rsi  = rsi.iloc[i]
+    for i in range(200, len(df)):
+        price    = closes.iloc[i]
+        prev_rsi = rsi.iloc[i - 1]
+        curr_rsi = rsi.iloc[i]
+        trend_up = price > ma200.iloc[i]
 
-        # ── Entry ──
-        if position == 0 and prev_rsi >= config.RSI_OVERSOLD and curr_rsi < config.RSI_OVERSOLD:
-            amount   = min(config.TRADE_AMOUNT_USDT, capital)
-            position = amount / price
-            capital -= amount
-            entry    = price
+        if position == 0:
+            if trend_up and prev_rsi >= config.RSI_OVERSOLD and curr_rsi < config.RSI_OVERSOLD:
+                amount        = min(config.TRADE_AMOUNT_USDT, capital)
+                position      = amount / price
+                capital      -= amount
+                entry         = price
+                peak_price    = price
+                trailing_stop = price * (1 - config.STOP_LOSS_PCT)
+        else:
+            if price > peak_price:
+                peak_price    = price
+                trailing_stop = peak_price * (1 - config.TRAILING_STOP_PCT)
 
-        # ── Exit ──
-        elif position > 0:
-            stop_loss   = entry * (1 - config.STOP_LOSS_PCT)
             take_profit = entry * (1 + config.TAKE_PROFIT_PCT)
             exit_reason = None
 
-            if price <= stop_loss:
-                exit_reason = "STOP_LOSS"
+            if price <= trailing_stop:
+                exit_reason = "TRAIL_STOP"
             elif price >= take_profit:
                 exit_reason = "TAKE_PROFIT"
-            elif prev_rsi <= config.RSI_OVERBOUGHT and curr_rsi > config.RSI_OVERBOUGHT:
-                exit_reason = "RSI_SELL"
 
             if exit_reason:
                 pnl      = (price - entry) * position
                 capital += position * price
                 trades.append({
+                    "symbol": symbol,
                     "entry":  entry,
                     "exit":   price,
                     "pnl":    round(pnl, 4),
@@ -72,52 +72,71 @@ def backtest(df: pd.DataFrame) -> dict:
                 })
                 position = 0.0
 
-    # ── Results ──
-    total_pnl    = sum(t["pnl"] for t in trades)
+    final_equity = capital + (position * closes.iloc[-1] if position else 0)
     wins         = [t for t in trades if t["pnl"] > 0]
     losses       = [t for t in trades if t["pnl"] <= 0]
     win_rate     = len(wins) / len(trades) * 100 if trades else 0
-    final_equity = capital + (position * closes.iloc[-1] if position else 0)
 
     return {
+        "symbol":       symbol,
         "trades":       trades,
         "total_trades": len(trades),
         "wins":         len(wins),
         "losses":       len(losses),
         "win_rate":     round(win_rate, 1),
-        "total_pnl":    round(total_pnl, 2),
+        "total_pnl":    round(sum(t["pnl"] for t in trades), 2),
         "final_equity": round(final_equity, 2),
-        "start_equity": 1000.0,
         "return_pct":   round((final_equity - 1000) / 10, 2),
     }
 
 
-# ── Pretty print ──────────────────────────────────────────────
-def print_results(r: dict):
-    print("\n" + "═" * 45)
-    print("  BACKTEST RESULTS")
-    print("═" * 45)
-    print(f"  Symbol    : {config.SYMBOL}  {config.TIMEFRAME}")
-    print(f"  RSI       : period={config.RSI_PERIOD}  OS={config.RSI_OVERSOLD}  OB={config.RSI_OVERBOUGHT}")
-    print(f"  SL / TP   : {config.STOP_LOSS_PCT*100:.0f}% / {config.TAKE_PROFIT_PCT*100:.0f}%")
-    print("─" * 45)
-    print(f"  Total trades  : {r['total_trades']}")
-    print(f"  Win / Loss    : {r['wins']} / {r['losses']}")
-    print(f"  Win rate      : {r['win_rate']}%")
-    print(f"  Total PnL     : ${r['total_pnl']}")
-    print(f"  Final equity  : ${r['final_equity']}  (started $1000)")
-    print(f"  Return        : {r['return_pct']}%")
-    print("─" * 45)
-    if r["trades"]:
-        print("\n  Last 5 trades:")
-        for t in r["trades"][-5:]:
+def print_results(results: list):
+    all_trades = []
+    for r in results:
+        all_trades.extend(r["trades"])
+    all_trades.sort(key=lambda x: x["date"])
+
+    total_pnl  = sum(r["total_pnl"] for r in results)
+    total_wins = sum(r["wins"] for r in results)
+    total_loss = sum(r["losses"] for r in results)
+    total_tr   = sum(r["total_trades"] for r in results)
+    overall_wr = total_wins / total_tr * 100 if total_tr else 0
+
+    print("\n" + "═" * 55)
+    print("  MULTI-PAIR BACKTEST RESULTS")
+    print("═" * 55)
+    print(f"  Timeframe : {config.TIMEFRAME}  |  RSI({config.RSI_PERIOD})  OS={config.RSI_OVERSOLD}")
+    print(f"  Trail Stop: {config.TRAILING_STOP_PCT*100:.1f}%  |  TP: {config.TAKE_PROFIT_PCT*100:.0f}%")
+    print("─" * 55)
+
+    for r in results:
+        print(f"  {r['symbol']:<12} trades={r['total_trades']}  "
+              f"W/L={r['wins']}/{r['losses']}  "
+              f"WR={r['win_rate']}%  "
+              f"PnL=${r['total_pnl']}")
+
+    print("─" * 55)
+    print(f"  COMBINED   trades={total_tr}  "
+          f"W/L={total_wins}/{total_loss}  "
+          f"WR={overall_wr:.1f}%  "
+          f"PnL=${round(total_pnl,2)}")
+    print("─" * 55)
+
+    if all_trades:
+        print("\n  All trades (chronological):")
+        for t in all_trades:
             emoji = "✅" if t["pnl"] > 0 else "❌"
-            print(f"    {emoji}  {t['date']}  entry={t['entry']:.2f}  exit={t['exit']:.2f}  pnl=${t['pnl']:.2f}  ({t['reason']})")
-    print("═" * 45 + "\n")
+            print(f"    {emoji} {t['date']}  {t['symbol']:<12} "
+                  f"entry={t['entry']:.2f}  exit={t['exit']:.2f}  "
+                  f"pnl=${t['pnl']:.2f}  ({t['reason']})")
+    print("═" * 55 + "\n")
 
 
 if __name__ == "__main__":
-    print(f"Fetching historical data for {config.SYMBOL}…")
-    df      = fetch_history(config.SYMBOL, config.TIMEFRAME, limit=500)
-    results = backtest(df)
+    results = []
+    for symbol in config.SYMBOLS:
+        print(f"Fetching {symbol}…")
+        df = fetch_history(symbol, config.TIMEFRAME, limit=1000)
+        r  = backtest_symbol(df, symbol)
+        results.append(r)
     print_results(results)
