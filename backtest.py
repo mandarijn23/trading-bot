@@ -1,7 +1,6 @@
 """
-Multi-pair Backtester
-----------------------
-Tests the RSI + 200 MA strategy across BTC, ETH, and SOL.
+Multi-pair Backtester — with cooldown after losses
+----------------------------------------------------
 Run:  python backtest.py
 """
 
@@ -30,6 +29,7 @@ def backtest_symbol(df: pd.DataFrame, symbol: str) -> dict:
     entry          = 0.0
     trailing_stop  = 0.0
     peak_price     = 0.0
+    cooldown       = 0      # candles remaining before next entry allowed
     trades         = []
 
     for i in range(200, len(df)):
@@ -38,8 +38,11 @@ def backtest_symbol(df: pd.DataFrame, symbol: str) -> dict:
         curr_rsi = rsi.iloc[i]
         trend_up = price > ma200.iloc[i]
 
+        if cooldown > 0:
+            cooldown -= 1
+
         if position == 0:
-            if trend_up and prev_rsi >= config.RSI_OVERSOLD and curr_rsi < config.RSI_OVERSOLD:
+            if cooldown == 0 and trend_up and prev_rsi >= config.RSI_OVERSOLD and curr_rsi < config.RSI_OVERSOLD:
                 amount        = min(config.TRADE_AMOUNT_USDT, capital)
                 position      = amount / price
                 capital      -= amount
@@ -62,6 +65,9 @@ def backtest_symbol(df: pd.DataFrame, symbol: str) -> dict:
             if exit_reason:
                 pnl      = (price - entry) * position
                 capital += position * price
+                # Only trigger cooldown on a loss
+                if pnl < 0:
+                    cooldown = config.COOLDOWN_CANDLES
                 trades.append({
                     "symbol": symbol,
                     "entry":  entry,
@@ -96,18 +102,18 @@ def print_results(results: list):
         all_trades.extend(r["trades"])
     all_trades.sort(key=lambda x: x["date"])
 
-    total_pnl  = sum(r["total_pnl"] for r in results)
+    total_pnl  = round(sum(r["total_pnl"] for r in results), 2)
     total_wins = sum(r["wins"] for r in results)
     total_loss = sum(r["losses"] for r in results)
     total_tr   = sum(r["total_trades"] for r in results)
     overall_wr = total_wins / total_tr * 100 if total_tr else 0
 
-    print("\n" + "═" * 55)
+    print("\n" + "═" * 58)
     print("  MULTI-PAIR BACKTEST RESULTS")
-    print("═" * 55)
+    print("═" * 58)
     print(f"  Timeframe : {config.TIMEFRAME}  |  RSI({config.RSI_PERIOD})  OS={config.RSI_OVERSOLD}")
-    print(f"  Trail Stop: {config.TRAILING_STOP_PCT*100:.1f}%  |  TP: {config.TAKE_PROFIT_PCT*100:.0f}%")
-    print("─" * 55)
+    print(f"  Trail Stop: {config.TRAILING_STOP_PCT*100:.1f}%  |  TP: {config.TAKE_PROFIT_PCT*100:.0f}%  |  Cooldown: {config.COOLDOWN_CANDLES}h")
+    print("─" * 58)
 
     for r in results:
         print(f"  {r['symbol']:<12} trades={r['total_trades']}  "
@@ -115,12 +121,12 @@ def print_results(results: list):
               f"WR={r['win_rate']}%  "
               f"PnL=${r['total_pnl']}")
 
-    print("─" * 55)
+    print("─" * 58)
     print(f"  COMBINED   trades={total_tr}  "
           f"W/L={total_wins}/{total_loss}  "
           f"WR={overall_wr:.1f}%  "
-          f"PnL=${round(total_pnl,2)}")
-    print("─" * 55)
+          f"PnL=${total_pnl}")
+    print("─" * 58)
 
     if all_trades:
         print("\n  All trades (chronological):")
@@ -129,7 +135,7 @@ def print_results(results: list):
             print(f"    {emoji} {t['date']}  {t['symbol']:<12} "
                   f"entry={t['entry']:.2f}  exit={t['exit']:.2f}  "
                   f"pnl=${t['pnl']:.2f}  ({t['reason']})")
-    print("═" * 55 + "\n")
+    print("═" * 58 + "\n")
 
 
 if __name__ == "__main__":

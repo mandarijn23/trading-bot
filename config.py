@@ -12,7 +12,8 @@ RSI_OVERBOUGHT = 70
 
 # Risk Management — per trade
 TRADE_AMOUNT_USDT  = 20.0
-TRAILING_STOP_PCT  = 0.035   # widened: gives trades more room to breathe
+TRAILING_STOP_PCT  = 0.025
+COOLDOWN_CANDLES   = 8        # wait 8 candles (~8h) after a loss before re-entering
 STOP_LOSS_PCT      = 0.03
 TAKE_PROFIT_PCT    = 0.08
 

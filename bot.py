@@ -64,6 +64,7 @@ class Position:
         self.peak_price    = 0.0
         self.trailing_stop = 0.0
         self.take_profit   = 0.0
+        self.cooldown      = 0      # intervals to wait before next entry
 
     def open(self, price):
         self.active        = True
@@ -86,8 +87,18 @@ class Position:
             return "TAKE_PROFIT"
         return "HOLD"
 
-    def close(self):
+    def close(self, was_loss: bool = False):
         self.active = False
+        if was_loss:
+            self.cooldown = config.COOLDOWN_CANDLES
+            log.info(f"[{self.symbol}] Cooldown active for {self.cooldown} intervals")
+
+    def tick_cooldown(self):
+        if self.cooldown > 0:
+            self.cooldown -= 1
+
+    def ready(self) -> bool:
+        return not self.active and self.cooldown == 0
 
 
 def run():
@@ -101,19 +112,23 @@ def run():
                 df    = fetch_ohlcv(exchange, symbol)
                 price = df["close"].iloc[-1]
                 pos   = positions[symbol]
+                pos.tick_cooldown()
 
                 exit_reason = pos.check_exit(price)
                 if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
                     log.info(f"🚨 [{symbol}] {exit_reason} @ {price:.2f}")
                     place_order(exchange, "sell", symbol, price)
-                    pos.close()
+                    was_loss = price < pos.entry_price
+                    pos.close(was_loss=was_loss)
 
-                elif not pos.active:
+                elif pos.ready():
                     signal = get_signal(df, config.RSI_PERIOD, config.RSI_OVERSOLD, config.RSI_OVERBOUGHT)
                     log.info(f"[{symbol}] price={price:.2f}  signal={signal}")
                     if signal == "BUY":
                         if place_order(exchange, "buy", symbol, price):
                             pos.open(price)
+                elif pos.cooldown > 0:
+                    log.info(f"[{symbol}] Cooldown: {pos.cooldown} intervals remaining")
                 else:
                     log.info(f"[{symbol}] price={price:.2f}  "
                              f"trail={pos.trailing_stop:.2f}  TP={pos.take_profit:.2f}")
