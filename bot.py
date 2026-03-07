@@ -25,14 +25,18 @@ log = logging.getLogger(__name__)
 
 
 def connect():
-    exchange = ccxt.binance({
-        "apiKey":  config.API_KEY,
-        "secret":  config.API_SECRET,
-        "enableRateLimit": True,
-        "options": {"defaultType": "spot"},
-    })
-    mode = "🟡 PAPER" if config.PAPER_TRADING else "🔴 LIVE"
-    log.info(f"{mode} TRADING MODE")
+    if config.PAPER_TRADING:
+        # No API key needed for paper trading — uses public market data only
+        exchange = ccxt.binance({"enableRateLimit": True})
+        log.info("[PAPER] TRADING MODE — no API key required")
+    else:
+        exchange = ccxt.binance({
+            "apiKey":  config.API_KEY,
+            "secret":  config.API_SECRET,
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        })
+        log.info("[LIVE] TRADING MODE — real money at risk!")
     return exchange
 
 
@@ -72,8 +76,7 @@ class Position:
         self.peak_price    = price
         self.trailing_stop = price * (1 - config.STOP_LOSS_PCT)
         self.take_profit   = price * (1 + config.TAKE_PROFIT_PCT)
-        log.info(f"📈 [{self.symbol}] Opened @ {price:.2f}  "
-                 f"TS={self.trailing_stop:.2f}  TP={self.take_profit:.2f}")
+        log.info(f"[{self.symbol}] OPEN @ {price:.2f}  TS={self.trailing_stop:.2f}  TP={self.take_profit:.2f}")
 
     def check_exit(self, price) -> str:
         if not self.active:
@@ -91,7 +94,7 @@ class Position:
         self.active = False
         if was_loss:
             self.cooldown = config.COOLDOWN_CANDLES
-            log.info(f"[{self.symbol}] Cooldown active for {self.cooldown} intervals")
+            log.info(f"[{self.symbol}] Cooldown: {self.cooldown} intervals")
 
     def tick_cooldown(self):
         if self.cooldown > 0:
@@ -104,7 +107,7 @@ class Position:
 def run():
     exchange  = connect()
     positions = {s: Position(s) for s in config.SYMBOLS}
-    log.info(f"🤖 Bot started | pairs: {config.SYMBOLS} | {config.TIMEFRAME}")
+    log.info(f"Bot started | pairs: {config.SYMBOLS} | {config.TIMEFRAME}")
 
     while True:
         for symbol in config.SYMBOLS:
@@ -116,7 +119,7 @@ def run():
 
                 exit_reason = pos.check_exit(price)
                 if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
-                    log.info(f"🚨 [{symbol}] {exit_reason} @ {price:.2f}")
+                    log.info(f"[{symbol}] EXIT {exit_reason} @ {price:.2f}")
                     place_order(exchange, "sell", symbol, price)
                     was_loss = price < pos.entry_price
                     pos.close(was_loss=was_loss)

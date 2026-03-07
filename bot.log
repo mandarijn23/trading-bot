@@ -1,0 +1,22 @@
+2026-03-07 19:44:02,108  ERROR    [BTC/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:44:02,349  ERROR    [ETH/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:44:02,588  ERROR    [SOL/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:44:52,134  INFO     [PAPER] TRADING MODE
+2026-03-07 19:44:52,134  INFO     Bot started | pairs: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] | 1h
+2026-03-07 19:44:52,643  ERROR    [BTC/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:44:52,889  ERROR    [ETH/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:44:53,131  ERROR    [SOL/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:45:53,692  ERROR    [BTC/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:45:53,933  ERROR    [ETH/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:45:54,174  ERROR    [SOL/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:46:54,415  ERROR    [BTC/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:46:54,657  ERROR    [ETH/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:46:54,885  ERROR    [SOL/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:47:55,125  ERROR    [BTC/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:47:55,365  ERROR    [ETH/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:47:55,601  ERROR    [SOL/USDT] Error: binance {"code":-2008,"msg":"Invalid Api-Key ID."}
+2026-03-07 19:48:38,031  INFO     [PAPER] TRADING MODE — no API key required
+2026-03-07 19:48:38,032  INFO     Bot started | pairs: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] | 1h
+2026-03-07 19:48:41,897  INFO     [BTC/USDT] price=67616.95  signal=HOLD
+2026-03-07 19:48:42,229  INFO     [ETH/USDT] price=1971.28  signal=HOLD
+2026-03-07 19:48:42,524  INFO     [SOL/USDT] price=83.39  signal=HOLD
