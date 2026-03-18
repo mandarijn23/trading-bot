@@ -1,7 +1,8 @@
-# 🤖 RSI Trading Bot — Binance / BTC
+# 🤖 RSI Trading Bot — Multi-pair (BTC / ETH / SOL)
 
-A Python trading bot that uses **RSI Mean Reversion** to trade BTC/USDT on Binance.
-Comes with a **backtester**, paper trading mode, and stop-loss / take-profit management.
+A Python trading bot that uses **RSI Mean Reversion** with a **200 MA trend filter** to trade
+BTC/USDT, ETH/USDT, and SOL/USDT on Binance.  
+Comes with a **backtester**, paper-trading mode, trailing stop, and per-trade cooldown after losses.
 
 ---
 
@@ -9,10 +10,10 @@ Comes with a **backtester**, paper trading mode, and stop-loss / take-profit man
 
 | Signal | Condition |
 |--------|-----------|
-| **BUY**  | RSI crosses **below** 30 (oversold — price likely to bounce) |
-| **SELL** | RSI crosses **above** 70 (overbought — price likely to pull back) |
+| **BUY**  | Price is **above** the 200-candle MA (uptrend confirmed) **and** RSI crosses **below** the oversold threshold (default 35) |
+| **EXIT** | Trailing stop (−2.5%) or take-profit (+8%) — no RSI-based sell |
 
-Additional exits: Stop-loss (−3%) and Take-profit (+6%) to protect capital.
+Additional protection: initial stop-loss of −3% on entry, cooldown of 8 candles after a losing trade.
 
 ---
 
@@ -28,7 +29,7 @@ Edit `config.py` and fill in your settings:
 ```python
 API_KEY    = "YOUR_BINANCE_API_KEY"
 API_SECRET = "YOUR_BINANCE_API_SECRET"
-SYMBOL     = "BTC/USDT"
+SYMBOLS    = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 TIMEFRAME  = "1h"
 PAPER_TRADING = True   # ← Always test first!
 ```
@@ -51,7 +52,7 @@ python bot.py
 ```
 trading-bot/
 ├── bot.py           # Main bot loop
-├── strategy.py      # RSI signal logic
+├── strategy.py      # RSI + 200 MA signal logic
 ├── backtest.py      # Historical backtest
 ├── config.py        # Your settings & API keys  ← NOT pushed to GitHub
 ├── requirements.txt
@@ -88,4 +89,5 @@ git push -u origin main
 - Try **RSI period 7–21** — shorter = more signals, noisier
 - Try **4h or 1d timeframe** for fewer but cleaner signals
 - Increase `TAKE_PROFIT_PCT` if your win rate is high
+- Adjust `COOLDOWN_CANDLES` to limit re-entries after losses
 - Always re-run `backtest.py` after changing settings

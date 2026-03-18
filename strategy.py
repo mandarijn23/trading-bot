@@ -19,7 +19,7 @@ def calculate_rsi(closes: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def get_signal(df: pd.DataFrame, rsi_period: int, oversold: float, overbought: float) -> str:
+def get_signal(df: pd.DataFrame, rsi_period: int, oversold: float) -> str:
     if len(df) < 200:
         return "HOLD"
 
