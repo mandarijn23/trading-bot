@@ -105,8 +105,9 @@ class Position:
 
 
 def run():
-    exchange  = connect()
-    positions = {s: Position(s) for s in config.SYMBOLS}
+    exchange    = connect()
+    positions   = {s: Position(s) for s in config.SYMBOLS}
+    last_candle = {}   # last seen candle timestamp per symbol, to tick cooldown once per candle
     log.info(f"Bot started | pairs: {config.SYMBOLS} | {config.TIMEFRAME}")
 
     while True:
@@ -115,7 +116,12 @@ def run():
                 df    = fetch_ohlcv(exchange, symbol)
                 price = df["close"].iloc[-1]
                 pos   = positions[symbol]
-                pos.tick_cooldown()
+
+                # Tick cooldown once per closed candle, not on every poll
+                candle_time = df["timestamp"].iloc[-1]
+                if last_candle.get(symbol) != candle_time:
+                    last_candle[symbol] = candle_time
+                    pos.tick_cooldown()
 
                 exit_reason = pos.check_exit(price)
                 if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
@@ -125,7 +131,7 @@ def run():
                     pos.close(was_loss=was_loss)
 
                 elif pos.ready():
-                    signal = get_signal(df, config.RSI_PERIOD, config.RSI_OVERSOLD, config.RSI_OVERBOUGHT)
+                    signal = get_signal(df, config.RSI_PERIOD, config.RSI_OVERSOLD)
                     log.info(f"[{symbol}] price={price:.2f}  signal={signal}")
                     if signal == "BUY":
                         if place_order(exchange, "buy", symbol, price):
