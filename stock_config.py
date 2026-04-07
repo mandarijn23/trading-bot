@@ -50,10 +50,13 @@ class StockTradingConfig(BaseSettings):
     
     # Risk Management
     trade_amount_usd: float = Field(default=20.0, gt=0, env="STOCK_TRADE_AMOUNT")
+    min_trade_usd: float = Field(default=10.0, gt=0, env="STOCK_MIN_TRADE_AMOUNT")
     trailing_stop_pct: float = Field(default=0.02, gt=0, lt=1, env="STOCK_TRAILING_STOP")
     stop_loss_pct: float = Field(default=0.03, gt=0, lt=1, env="STOCK_STOP_LOSS")
     take_profit_pct: float = Field(default=0.05, gt=0, lt=1, env="STOCK_TAKE_PROFIT")
     cooldown_candles: int = Field(default=4, ge=0, env="STOCK_COOLDOWN")
+    max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, env="STOCK_MAX_DAILY_LOSS")
+    max_open_positions: int = Field(default=2, ge=1, env="STOCK_MAX_OPEN_POS")
     
     # Paper vs Live trading
     paper_trading: bool = Field(default=True, env="STOCK_PAPER_TRADING")

@@ -16,13 +16,21 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 
 from stock_config import load_stock_config
-from strategy import get_signal
+from strategy import get_signal, get_signal_enhanced
 
 try:
-    from ml_model import TradingAI
+    # Try Random Forest first (lightweight, better on small datasets)
+    from ml_model_rf import TradingAI
     HAS_AI = True
+    print("✅ Using Random Forest AI model")
 except ImportError:
-    HAS_AI = False
+    # Fall back to TensorFlow
+    try:
+        from ml_model import TradingAI
+        HAS_AI = True
+        print("✅ Using TensorFlow AI model")
+    except ImportError:
+        HAS_AI = False
 
 
 # Configure logging
@@ -62,13 +70,19 @@ class StockPosition:
         self.entry_time = None
         self.ai_confidence = 0.5
 
-    def open(self, price: float, quantity: int, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5) -> None:
-        """Open position."""
+    def open(self, price: float, quantity: int, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5, atr_stop: float = None) -> None:
+        """Open position. Use ATR stop if provided, otherwise fixed %."""
         self.active = True
         self.entry_price = price
         self.peak_price = price
         self.quantity = quantity
-        self.trailing_stop = price * (1 - stop_loss_pct)
+        
+        # Use ATR-based stop if provided, otherwise fixed %
+        if atr_stop is not None:
+            self.trailing_stop = atr_stop
+        else:
+            self.trailing_stop = price * (1 - stop_loss_pct)
+        
         self.take_profit = price * (1 + take_profit_pct)
         self.entry_time = datetime.now()
         self.ai_confidence = ai_confidence
@@ -114,6 +128,8 @@ class StockTradingBot:
         self.api = None
         self.positions: Dict[str, StockPosition] = {}
         self.ai = TradingAI() if HAS_AI and config.use_ai else None
+        self.daily_pnl = 0.0  # Track daily P&L for max loss limit
+        self.start_date = datetime.now().date()  # Reset daily loss at midnight
         
     def connect(self) -> None:
         """Connect to Alpaca."""
@@ -215,6 +231,11 @@ class StockTradingBot:
                 if success:
                     was_loss = price < pos.entry_price
                     pnl = (price - pos.entry_price) * pos.quantity
+                    pnl_pct = (pnl / (pos.entry_price * pos.quantity)) * 100 if pos.entry_price > 0 else 0
+                    self.daily_pnl += pnl_pct
+                    
+                    self._log_trade(symbol, "sell", pos.entry_price, pos.quantity, pos.ai_confidence, 
+                                   exit_reason=exit_reason, exit_price=price, pnl=pnl)
                     
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
@@ -223,7 +244,18 @@ class StockTradingBot:
             
             # Check for entry
             elif pos.ready():
-                signal = get_signal(df, self.config.rsi_period, self.config.rsi_oversold, self.config.rsi_overbought)
+                # Check daily loss limit and max open positions
+                if not self._check_daily_loss():
+                    return  # Stop trading for the day
+                
+                if self._count_open_positions() >= self.config.max_open_positions:
+                    self.logger.debug(f"[{symbol}] Max open positions ({self.config.max_open_positions}) reached")
+                    return
+                
+                signal, sig_details = get_signal_enhanced(df, self.config.rsi_period, self.config.rsi_oversold, self.config.rsi_overbought)
+                
+                # Log volume confirmation
+                volume_status = "✓" if sig_details.volume_confirm else "✗"
                 
                 ai_confidence = 0.5
                 if self.ai and signal == "BUY":
@@ -231,11 +263,19 @@ class StockTradingBot:
                 
                 if signal == "BUY" and (not self.ai or ai_confidence > self.config.min_ai_confidence):
                     qty = int(self.config.trade_amount_usd / price)
+                    
+                    # Validate trade size
+                    trade_usd = qty * price
+                    if not self._validate_trade_size(trade_usd):
+                        self.logger.debug(f"[{symbol}] Trade size too small: ${trade_usd:.2f}")
+                        return
+                    
                     if qty > 0:
-                        self.logger.info(f"[{symbol}] BUY signal | AI: {ai_confidence:.0%}")
+                        self.logger.info(f"[{symbol}] BUY signal | Vol:{volume_status} | ATR:{sig_details.atr:.2f} | AI:{ai_confidence:.0%}")
                         success = self.place_order("buy", symbol, qty, ai_confidence)
                         if success:
-                            pos.open(price, qty, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
+                            self._log_trade(symbol, "buy", price, qty, ai_confidence)
+                            pos.open(price, qty, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence, atr_stop=sig_details.stop_loss_atr)
             elif pos.active:
                 self.logger.debug(f"[{symbol}] ${price:.2f} TP=${pos.take_profit:.2f} TS=${pos.trailing_stop:.2f}")
             else:
@@ -243,6 +283,71 @@ class StockTradingBot:
                 
         except Exception as e:
             self.logger.error(f"[{symbol}] Error: {e}")
+    
+    def _check_daily_loss(self) -> bool:
+        """Check if daily loss exceeded. Resets at new day."""
+        # Reset if new day
+        today = datetime.now().date()
+        if today > self.start_date:
+            self.daily_pnl = 0.0
+            self.start_date = today
+        
+        # Check limit
+        max_loss = -abs(self.config.max_daily_loss_pct)  # Negative number
+        if self.daily_pnl < max_loss:
+            self.logger.warning(f"🛑 Daily loss limit exceeded: {self.daily_pnl:.2f}% | Max: {max_loss:.2f}%")
+            return False  # Stop trading
+        return True
+    
+    def _count_open_positions(self) -> int:
+        """Count currently open positions."""
+        return sum(1 for pos in self.positions.values() if pos.active)
+    
+    def _validate_trade_size(self, trade_amount: float) -> bool:
+        """Check trade size is above minimum."""
+        if trade_amount < self.config.min_trade_usd:
+            self.logger.debug(f"Trade size ${trade_amount:.2f} below minimum ${self.config.min_trade_usd:.2f}")
+            return False
+        return True
+    
+    def _log_trade(self, symbol: str, side: str, price: float, qty: int, ai_confidence: float, exit_reason: str = None, exit_price: float = None, pnl: float = None) -> None:
+        """Log trade to CSV for analysis."""
+        try:
+            import csv
+            from pathlib import Path
+            
+            csv_file = "trades_history.csv"
+            file_exists = Path(csv_file).exists()
+            
+            with open(csv_file, "a", newline="") as f:
+                writer = csv.writer(f)
+                
+                # Write header if new file
+                if not file_exists:
+                    writer.writerow([
+                        "timestamp", "symbol", "side", "entry_price", "qty", 
+                        "ai_confidence", "exit_reason", "exit_price", "pnl_usd", "pnl_pct"
+                    ])
+                
+                # Calculate P&L if available
+                pnl_pct = None
+                if exit_price and side == "buy":
+                    pnl_pct = ((exit_price - price) / price) * 100
+                
+                writer.writerow([
+                    datetime.now().isoformat(),
+                    symbol,
+                    side,
+                    f"{price:.2f}",
+                    qty,
+                    f"{ai_confidence:.0%}",
+                    exit_reason or "",
+                    f"{exit_price:.2f}" if exit_price else "",
+                    f"{pnl:.2f}" if pnl else "",
+                    f"{pnl_pct:.2f}%" if pnl_pct else ""
+                ])
+        except Exception as e:
+            self.logger.debug(f"Failed to log trade: {e}")
 
     def run(self) -> None:
         """Main trading loop."""

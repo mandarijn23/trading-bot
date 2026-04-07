@@ -37,10 +37,13 @@ class TradingConfig(BaseSettings):
     
     # Risk Management
     trade_amount_usdt: float = Field(default=20.0, gt=0, env="TRADE_AMOUNT_USDT")
+    min_trade_usdt: float = Field(default=10.0, gt=0, env="MIN_TRADE_USDT")
     trailing_stop_pct: float = Field(default=0.025, gt=0, lt=1, env="TRAILING_STOP_PCT")
     cooldown_candles: int = Field(default=8, ge=0, env="COOLDOWN_CANDLES")
     stop_loss_pct: float = Field(default=0.03, gt=0, lt=1, env="STOP_LOSS_PCT")
     take_profit_pct: float = Field(default=0.08, gt=0, lt=1, env="TAKE_PROFIT_PCT")
+    max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, env="MAX_DAILY_LOSS_PCT")
+    max_open_positions: int = Field(default=2, ge=1, env="MAX_OPEN_POSITIONS")
     
     # Bot settings
     paper_trading: bool = Field(default=True, env="PAPER_TRADING")
