@@ -237,8 +237,9 @@ class AsyncTradingBot:
                 if signal == "BUY" and ai_confidence > self.config.min_ai_confidence:
                     # 🔴 RISK CHECK: Before placing any order
                     open_positions = sum(1 for p in self.positions.values() if p.active)
-                    if not self.risk.check_pre_trade(self.portfolio, open_positions):
-                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager")
+                    allowed, reason = self.risk.check_pre_trade(self.portfolio, symbol, open_positions)
+                    if not allowed:
+                        self.logger.warning(f"[{symbol}] Trade blocked: {reason}")
                         return
                     
                     self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
