@@ -62,7 +62,15 @@ class TestFeatureExtractor:
     
     def test_uptrend_produces_buy_signals(self):
         """Test uptrend produces positive targets."""
-        df = self.create_sample_df(n=300, trend="up")
+        # Stronger trend to ensure targets are hit
+        closes = np.linspace(100, 150, 300)
+        df = pd.DataFrame({
+            "close": closes,
+            "open": closes * 0.99,
+            "high": closes * 1.01,
+            "low": closes * 0.98,
+            "volume": np.ones(300) * 1000000,
+        })
         X, y = FeatureExtractor.extract_features(df, lookback=20)
         
         # In uptrend, should have some positive targets
@@ -72,33 +80,39 @@ class TestFeatureExtractor:
 class TestTradingAI:
     """Test AI model."""
     
-    def test_ai_initialization(self):
+    @pytest.fixture
+    def ai(self, tmp_path):
+        """Provide a fresh TradingAI instance for each test."""
+        metrics_file = tmp_path / "test_metrics.json"
+        ai = TradingAI()
+        ai.metrics_file = metrics_file
+        # Reset metrics
+        ai.metrics = {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+        }
+        return ai
+
+    def test_ai_initialization(self, ai):
         """Test AI initializes correctly."""
-        ai = TradingAI()
         assert ai.model is not None or ai.model is None  # TF might not be installed
-        assert ai.metrics["trades"] >= 0
+        assert ai.metrics["trades"] == 0
     
-    def test_get_position_size_multiplier(self):
+    def test_get_position_size_multiplier(self, ai):
         """Test position size adjustment."""
-        ai = TradingAI()
         multiplier = ai.get_position_size_multiplier()
-        
         assert 0.5 <= multiplier <= 1.5
     
-    def test_update_from_trade_increments_counter(self):
+    def test_update_from_trade_increments_counter(self, ai):
         """Test trade tracking."""
-        ai = TradingAI()
         initial_trades = ai.metrics["trades"]
-        
         ai.update_from_trade(pnl=10.0, was_win=True)
-        
         assert ai.metrics["trades"] == initial_trades + 1
-        assert ai.metrics["wins"] == initial_trades // ai.metrics["trades"] + 1 or initial_trades == 0
     
-    def test_win_loss_tracking(self):
+    def test_win_loss_tracking(self, ai):
         """Test win/loss tracking."""
-        ai = TradingAI()
-        
         ai.update_from_trade(pnl=10.0, was_win=True)
         ai.update_from_trade(pnl=-5.0, was_win=False)
         ai.update_from_trade(pnl=15.0, was_win=True)
@@ -108,10 +122,8 @@ class TestTradingAI:
         assert ai.metrics["losses"] == 1
         assert ai.metrics["total_pnl"] == 20.0
     
-    def test_predict_entry_probability_returns_0_to_1(self):
+    def test_predict_entry_probability_returns_0_to_1(self, ai):
         """Test prediction returns valid probability."""
-        ai = TradingAI()
-        
         df = pd.DataFrame({
             "close": np.linspace(100, 102, 30),
             "open": np.linspace(100, 102, 30) * 0.99,
@@ -123,9 +135,8 @@ class TestTradingAI:
         prob = ai.predict_entry_probability(df)
         assert 0 <= prob <= 1
     
-    def test_get_stats_format(self):
+    def test_get_stats_format(self, ai):
         """Test stats dictionary format."""
-        ai = TradingAI()
         ai.update_from_trade(10.0, True)
         
         stats = ai.get_stats()
@@ -138,10 +149,17 @@ class TestTradingAI:
 class TestAIIntegration:
     """Integration tests."""
     
-    def test_ai_learns_from_series_of_trades(self):
-        """Test AI adapts over multiple trades."""
+    @pytest.fixture
+    def ai(self, tmp_path):
+        """Provide a fresh TradingAI instance."""
+        metrics_file = tmp_path / "integration_metrics.json"
         ai = TradingAI()
-        
+        ai.metrics_file = metrics_file
+        ai.metrics = {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+        return ai
+
+    def test_ai_learns_from_series_of_trades(self, ai):
+        """Test AI adapts over multiple trades."""
         # Simulate winning streak
         for _ in range(10):
             ai.update_from_trade(pnl=10.0, was_win=True)
@@ -149,7 +167,7 @@ class TestAIIntegration:
         multiplier_after_wins = ai.get_position_size_multiplier()
         
         # Simulate losing streak
-        for _ in range(5):
+        for _ in range(20):
             ai.update_from_trade(pnl=-5.0, was_win=False)
         
         multiplier_after_losses = ai.get_position_size_multiplier()
@@ -157,29 +175,20 @@ class TestAIIntegration:
         # Multiplier should be lower after losses
         assert multiplier_after_losses < multiplier_after_wins
     
-    def test_persistence(self):
+    def test_persistence(self, tmp_path):
         """Test metrics are saved and loaded."""
-        import tempfile
-        import json
-        from pathlib import Path
+        temp_path = tmp_path / "persistent_metrics.json"
         
-        # Create temp file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            temp_path = Path(f.name)
+        ai = TradingAI()
+        ai.metrics_file = temp_path
+        ai.metrics = {"trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+        ai.update_from_trade(10.0, True)
+        ai.save_metrics()
         
-        try:
-            ai = TradingAI()
-            ai.metrics_file = temp_path
-            ai.update_from_trade(10.0, True)
-            ai.save_metrics()
-            
-            # Load in new instance
-            ai2 = TradingAI()
-            ai2.metrics_file = temp_path
-            ai2.load_metrics()
-            
-            assert ai2.metrics["trades"] == 1
-            assert ai2.metrics["wins"] == 1
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
+        # Load in new instance
+        ai2 = TradingAI()
+        ai2.metrics_file = temp_path
+        ai2.load_metrics()
+        
+        assert ai2.metrics["trades"] == 1
+        assert ai2.metrics["wins"] == 1

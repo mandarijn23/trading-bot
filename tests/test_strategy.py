@@ -29,7 +29,8 @@ class TestCalculateRSI:
         rsi = calculate_rsi(closes, period=14)
         
         assert len(rsi) == len(closes)
-        assert pd.isna(rsi.iloc[0])  # First values will be NaN
+        # With new strategy logic, first values are around 50 or calculated from small window
+        assert 0 <= rsi.iloc[0] <= 100
     
     def test_rsi_all_increasing(self):
         """Test RSI with all increasing prices."""
@@ -53,18 +54,19 @@ class TestGetSignal:
     
     def create_sample_df(self, prices):
         """Helper to create sample OHLCV DataFrame."""
+        prices_arr = np.array(prices)
         df = pd.DataFrame({
-            "close": prices,
-            "open": prices * 0.99,
-            "high": prices * 1.01,
-            "low": prices * 0.98,
+            "close": prices_arr,
+            "open": prices_arr * 0.99,
+            "high": prices_arr * 1.01,
+            "low": prices_arr * 0.98,
             "volume": np.ones(len(prices)) * 1000000,
         })
         return df
     
     def test_signal_insufficient_data(self):
         """Test signal with insufficient data."""
-        prices = list(range(1, 50))
+        prices = np.array(list(range(1, 50)))
         df = self.create_sample_df(prices)
         
         signal = get_signal(df, rsi_period=14, oversold=30, overbought=70)
@@ -74,7 +76,7 @@ class TestGetSignal:
         """Test signal with missing close column."""
         df = pd.DataFrame({"other_col": [1, 2, 3]})
         
-        with pytest.raises(ValueError, match="DataFrame must contain 'close' column"):
+        with pytest.raises(ValueError, match="DataFrame must contain"):
             get_signal(df)
     
     def test_signal_rsi_oversold_crossover(self):

@@ -189,6 +189,18 @@ class TradingAI:
         except FileNotFoundError:
             pass
     
+    def fit(self, X: np.ndarray, y: np.ndarray):
+        """Train or retrain the model."""
+        if len(X) < 5:
+            return
+        
+        print(f"🧠 Training RF model on {len(X)} samples...")
+        self.scaler.fit(X)
+        X_scaled = self.scaler.transform(X)
+        self.model.fit(X_scaled, y)
+        self.save_model()
+        print("✅ RF model training complete")
+
     def save_model(self):
         """Save model and metrics."""
         joblib.dump(self.model, "trading_model_rf.pkl")
