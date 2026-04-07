@@ -518,16 +518,3 @@ class TradeValidator:
         
         return True, "Valid"
 
-        
-        # Check minimum
-        min_per_trade = self.config.min_trade_usdt if hasattr(self.config, 'min_trade_usdt') else 10
-        if amount_usd < min_per_trade:
-            self.logger.warning(f"⚠️ Position size too small: ${amount_usd:.2f} < ${min_per_trade:.2f}")
-            return None
-        
-        # Convert USD to base currency
-        position_size = amount_usd / entry_price
-        
-        self.logger.debug(f"Position size calculated: {position_size:.6f} {symbol} (${amount_usd:.2f})")
-
-        

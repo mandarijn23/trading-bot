@@ -306,11 +306,8 @@ class AsyncTradingBot:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Mark portfolio to market after all symbols are processed.
-                latest_prices = {}
-                for symbol, position in self.positions.items():
-                    if position.entry_price > 0:
-                        latest_prices[symbol] = position.entry_price if not position.active else position.entry_price
-                self.portfolio.update_equity(latest_prices)
+                if self.latest_prices:
+                    self.portfolio.update_equity(self.latest_prices)
                 
                 # Periodically log AI stats and portfolio status
                 self.retrain_counter += 1
