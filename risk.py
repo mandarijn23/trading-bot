@@ -529,30 +529,5 @@ class TradeValidator:
         position_size = amount_usd / entry_price
         
         self.logger.debug(f"Position size calculated: {position_size:.6f} {symbol} (${amount_usd:.2f})")
+
         
-        return position_size
-    
-    def record_trade(self, symbol: str, side: str, pnl: float, pnl_pct: float):
-        """
-        Record trade outcome for adaptive risk management (future enhancement).
-        
-        Args:
-            symbol: Trading pair
-            side: "buy" or "sell"
-            pnl: P&L in USDT
-            pnl_pct: P&L as percentage
-        """
-        # Simple tracking for now
-        # Can be extended with win rate tracking, position sizing adjustment, etc.
-        self.logger.debug(f"Trade recorded: {symbol} {side} | {pnl_pct:+.2f}% (${pnl:+.2f})")
-    
-    def reset_daily_limits(self):
-        """Reset daily limits (called at market open)."""
-        self.logger.info("Daily limits reset")
-    
-    def get_status(self) -> dict:
-        """Get current risk status."""
-        return {
-            "trading_enabled": self.trading_enabled,
-            "kill_switch_reason": self.kill_switch_reason,
-        }

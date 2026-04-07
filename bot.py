@@ -115,6 +115,7 @@ class AsyncTradingBot:
         self.logger = setup_logging(config.log_level)
         self.exchange: ccxt.binance | None = None
         self.positions: Dict[str, Position] = {}
+        self.latest_prices: Dict[str, float] = {}
         self.ai = TradingAI()  # Initialize AI model
         self.trades_data: Dict[str, list] = defaultdict(list)  # Track data for retraining
         self.retrain_counter = 0
@@ -195,6 +196,7 @@ class AsyncTradingBot:
         try:
             df = await self.fetch_ohlcv(symbol)
             price = float(df["close"].iloc[-1])
+            self.latest_prices[symbol] = price
             pos = self.positions[symbol]
             
             pos.tick_cooldown()
@@ -206,8 +208,11 @@ class AsyncTradingBot:
                 success = await self.place_order("sell", symbol, price)
                 if success:
                     was_loss = price < pos.entry_price
-                    pnl = (price - pos.entry_price) * (self.config.trade_amount_usdt / pos.entry_price)
-                    pnl_pct = (pnl / (pos.entry_price * self.config.trade_amount_usdt)) * 100 if pos.entry_price > 0 else 0
+                    position = self.portfolio.positions.get(symbol, {})
+                    qty = float(position.get("size", self.config.trade_amount_usdt / pos.entry_price)) if pos.entry_price > 0 else 0.0
+                    pnl = (price - pos.entry_price) * qty
+                    notional = pos.entry_price * qty if pos.entry_price > 0 else 0.0
+                    pnl_pct = (pnl / notional) * 100 if notional > 0 else 0
                     
                     # 📊 Update portfolio
                     self.portfolio.close_position(symbol, price, datetime.now())
@@ -216,8 +221,7 @@ class AsyncTradingBot:
                     self.ai.update_from_trade(pnl, not was_loss)
                     
                     # 🔔 Discord notification
-                    qty = round(self.config.trade_amount_usdt / pos.entry_price, 6)
-                    discord.notify_sell(symbol, pos.entry_price, price, qty, pnl_pct, exit_reason)
+                    discord.notify_sell(symbol, pos.entry_price, price, int(round(qty)), pnl_pct, exit_reason)
                     
                     pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
             
@@ -237,8 +241,9 @@ class AsyncTradingBot:
                 if signal == "BUY" and ai_confidence > self.config.min_ai_confidence:
                     # 🔴 RISK CHECK: Before placing any order
                     open_positions = sum(1 for p in self.positions.values() if p.active)
-                    if not self.risk.check_pre_trade(self.portfolio, open_positions):
-                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager")
+                    allowed, reason = self.risk.check_pre_trade(self.portfolio, symbol, open_positions)
+                    if not allowed:
+                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager: {reason}")
                         return
                     
                     self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
@@ -262,6 +267,9 @@ class AsyncTradingBot:
                 )
             else:
                 self.logger.debug(f"[{symbol}] Cooldown: {pos.cooldown} intervals remaining")
+
+            if self.latest_prices:
+                self.portfolio.update_equity(self.latest_prices)
                 
         except asyncio.CancelledError:
             self.logger.info(f"[{symbol}] Task cancelled")
@@ -296,6 +304,13 @@ class AsyncTradingBot:
                 # Process all symbols concurrently
                 tasks = [self.process_symbol(symbol) for symbol in self.config.symbols]
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Mark portfolio to market after all symbols are processed.
+                latest_prices = {}
+                for symbol, position in self.positions.items():
+                    if position.entry_price > 0:
+                        latest_prices[symbol] = position.entry_price if not position.active else position.entry_price
+                self.portfolio.update_equity(latest_prices)
                 
                 # Periodically log AI stats and portfolio status
                 self.retrain_counter += 1
