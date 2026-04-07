@@ -16,7 +16,7 @@ import sys
 import argparse
 
 from config import load_config
-from strategy import calculate_rsi
+from strategy import get_signal_enhanced
 from ml_model import FeatureExtractor
 
 
@@ -100,9 +100,7 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, config, use_ai: bool = False,
         BacktestResult with trades and statistics
     """
     closes = df["close"]
-    rsi = calculate_rsi(closes, config.rsi_period)
-    ma200 = closes.rolling(200).mean()
-
+    
     capital: float = 1000.0
     position: float = 0.0
     entry: float = 0.0
@@ -113,27 +111,28 @@ def backtest_symbol(df: pd.DataFrame, symbol: str, config, use_ai: bool = False,
 
     for i in range(200, len(df)):
         price: float = float(closes.iloc[i])
-        prev_rsi: float = float(rsi.iloc[i - 1])
-        curr_rsi: float = float(rsi.iloc[i])
-        trend_up: bool = price > float(ma200.iloc[i])
+        df_window = df.iloc[:i+1].copy()  # Window up to current candle
 
         if cooldown > 0:
             cooldown -= 1
 
         if position == 0:
-            # Check for entry signal
-            signal = (cooldown == 0 and trend_up and 
-                     prev_rsi >= config.rsi_oversold and 
-                     curr_rsi < config.rsi_oversold)
+            # Check for entry signal using unified strategy
+            signal, signal_details = get_signal_enhanced(
+                df_window,
+                rsi_period=config.rsi_period,
+                oversold=config.rsi_oversold,
+                overbought=config.rsi_overbought,
+            )
             
             # Add AI confirmation if enabled
             ai_confidence: float | None = None
-            if use_ai and signal and ai_model:
+            if use_ai and signal == "BUY" and ai_model and cooldown == 0:
                 recent_df = df.iloc[max(0, i-20):i+1].copy()
                 ai_confidence = float(ai_model.predict_entry_probability(recent_df))
-                signal = signal and ai_confidence > 0.45
+                signal = "BUY" if ai_confidence > 0.45 else "HOLD"
             
-            if signal:
+            if signal == "BUY" and cooldown == 0:
                 amount: float = min(config.trade_amount_usdt, capital)
                 position = amount / price
                 capital -= amount

@@ -22,6 +22,8 @@ import pandas as pd
 from config import load_config
 from strategy import get_signal
 from ml_model import TradingAI
+from portfolio import Portfolio
+from risk import RiskManager
 
 
 # Configure logging
@@ -116,6 +118,11 @@ class AsyncTradingBot:
         self.trades_data: Dict[str, list] = defaultdict(list)  # Track data for retraining
         self.retrain_counter = 0
         
+        # 🆕 Portfolio & Risk Management
+        self.portfolio = Portfolio(starting_balance=self.config.starting_balance)
+        self.risk = RiskManager(config)
+        self.logger.info(f"Portfolio initialized: ${self.portfolio.equity:.2f}")
+        
     async def connect(self) -> None:
         """Connect to exchange."""
         try:
@@ -200,6 +207,9 @@ class AsyncTradingBot:
                     was_loss = price < pos.entry_price
                     pnl = (price - pos.entry_price) * (self.config.trade_amount_usdt / pos.entry_price)
                     
+                    # 📊 Update portfolio
+                    self.portfolio.close_position(symbol, price, datetime.now())
+                    
                     # AI learns from this trade
                     self.ai.update_from_trade(pnl, not was_loss)
                     
@@ -219,9 +229,19 @@ class AsyncTradingBot:
                 
                 # Only enter if signal + AI is confident enough
                 if signal == "BUY" and ai_confidence > self.config.min_ai_confidence:
+                    # 🔴 RISK CHECK: Before placing any order
+                    open_positions = sum(1 for p in self.positions.values() if p.active)
+                    if not self.risk.check_pre_trade(self.portfolio, open_positions):
+                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager")
+                        return
+                    
                     self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
                     success = await self.place_order("buy", symbol, price, ai_confidence)
                     if success:
+                        # 📊 Register in portfolio
+                        self.portfolio.open_position(symbol, price, 
+                                                   self.config.trade_amount_usdt / price,
+                                                   datetime.now())
                         pos.open(price, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
                 elif signal == "BUY":
                     self.logger.debug(f"[{symbol}] BUY signal ignored (AI confidence too low: {ai_confidence:.0%})")
@@ -249,15 +269,21 @@ class AsyncTradingBot:
         
         try:
             while True:
+                # 📊 Update portfolio state
+                today = datetime.utcnow().date()
+                self.portfolio.new_day(today)
+                
                 # Process all symbols concurrently
                 tasks = [self.process_symbol(symbol) for symbol in self.config.symbols]
                 await asyncio.gather(*tasks, return_exceptions=True)
                 
-                # Periodically log AI stats
+                # Periodically log AI stats and portfolio status
                 self.retrain_counter += 1
                 if self.retrain_counter % 60 == 0:  # Every 60 iterations
                     stats = self.ai.get_stats()
+                    portfolio_stats = self.portfolio.get_stats()
                     self.logger.info(f"🤖 AI Stats: {stats}")
+                    self.logger.info(f"💰 Portfolio: Equity=${portfolio_stats['equity']:.2f}, Daily P&L: {portfolio_stats['daily_pnl_pct']:+.2f}%")
                 
                 await asyncio.sleep(self.config.check_interval)
         except KeyboardInterrupt:

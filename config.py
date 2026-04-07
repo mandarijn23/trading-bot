@@ -45,6 +45,9 @@ class TradingConfig(BaseSettings):
     max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, env="MAX_DAILY_LOSS_PCT")
     max_open_positions: int = Field(default=2, ge=1, env="MAX_OPEN_POSITIONS")
     
+    # Portfolio settings
+    starting_balance: float = Field(default=1000.0, gt=0, env="STARTING_BALANCE")
+    
     # Bot settings
     paper_trading: bool = Field(default=True, env="PAPER_TRADING")
     check_interval: int = Field(default=60, gt=0, env="CHECK_INTERVAL")
