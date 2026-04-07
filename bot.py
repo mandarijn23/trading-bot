@@ -1,146 +1,300 @@
 """
-Multi-pair Trading Bot — RSI + 200 MA + Trailing Stop
--------------------------------------------------------
-Trades BTC, ETH, and SOL simultaneously.
+Multi-pair Trading Bot — RSI + 200 MA + Trailing Stop + AI Learning.
+
+Async trading bot with machine learning capabilities:
+- AI predicts entry probability
+- Learns from trade outcomes
+- Adapts position sizes dynamically
+
 Run:  python bot.py
 """
 
-import time
+import asyncio
 import logging
+import sys
+from typing import Dict, Literal
+from datetime import datetime
+from collections import defaultdict
+
 import ccxt
 import pandas as pd
 
-import config
+from config import load_config
 from strategy import get_signal
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler(),
-    ],
-)
-log = logging.getLogger(__name__)
+from ml_model import TradingAI
 
 
-def connect():
-    if config.PAPER_TRADING:
-        # No API key needed for paper trading — uses public market data only
-        exchange = ccxt.binance({"enableRateLimit": True})
-        log.info("[PAPER] TRADING MODE — no API key required")
-    else:
-        exchange = ccxt.binance({
-            "apiKey":  config.API_KEY,
-            "secret":  config.API_SECRET,
-            "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
-        })
-        log.info("[LIVE] TRADING MODE — real money at risk!")
-    return exchange
-
-
-def fetch_ohlcv(exchange, symbol, limit=250):
-    raw = exchange.fetch_ohlcv(symbol, config.TIMEFRAME, limit=limit)
-    df  = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
-
-
-def place_order(exchange, side, symbol, price):
-    qty = round(config.TRADE_AMOUNT_USDT / price, 6)
-    if config.PAPER_TRADING:
-        log.info(f"[PAPER] {side.upper()} {qty} {symbol} @ {price:.2f}")
-        return True
-    try:
-        exchange.create_market_order(symbol, side, qty)
-        return True
-    except ccxt.BaseError as e:
-        log.error(f"Order failed ({symbol}): {e}")
-        return False
+# Configure logging
+def setup_logging(log_level: str = "INFO") -> logging.Logger:
+    """Configure logging with file and console output."""
+    logger = logging.getLogger("trading-bot")
+    logger.setLevel(log_level.upper())
+    
+    formatter = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    # File handler
+    fh = logging.FileHandler("bot.log")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    
+    # Console handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+    
+    return logger
 
 
 class Position:
-    def __init__(self, symbol):
-        self.symbol        = symbol
-        self.active        = False
-        self.entry_price   = 0.0
-        self.peak_price    = 0.0
+    """Manages an active trading position."""
+    
+    def __init__(self, symbol: str) -> None:
+        self.symbol = symbol
+        self.active = False
+        self.entry_price = 0.0
+        self.peak_price = 0.0
         self.trailing_stop = 0.0
-        self.take_profit   = 0.0
-        self.cooldown      = 0      # intervals to wait before next entry
+        self.take_profit = 0.0
+        self.cooldown = 0  # intervals to wait before next entry
+        self.entry_time = None
+        self.ai_confidence = 0.0  # AI entry probability
 
-    def open(self, price):
-        self.active        = True
-        self.entry_price   = price
-        self.peak_price    = price
-        self.trailing_stop = price * (1 - config.STOP_LOSS_PCT)
-        self.take_profit   = price * (1 + config.TAKE_PROFIT_PCT)
-        log.info(f"[{self.symbol}] OPEN @ {price:.2f}  TS={self.trailing_stop:.2f}  TP={self.take_profit:.2f}")
+    def open(self, price: float, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5) -> None:
+        """Open a new position."""
+        self.active = True
+        self.entry_price = price
+        self.peak_price = price
+        self.trailing_stop = price * (1 - stop_loss_pct)
+        self.take_profit = price * (1 + take_profit_pct)
+        self.entry_time = datetime.now()
+        self.ai_confidence = ai_confidence
 
-    def check_exit(self, price) -> str:
+    def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
+        """Check if position should be closed."""
         if not self.active:
             return "HOLD"
+        
         if price > self.peak_price:
-            self.peak_price    = price
-            self.trailing_stop = price * (1 - config.TRAILING_STOP_PCT)
+            self.peak_price = price
+            self.trailing_stop = price * (1 - trailing_stop_pct)
+        
         if price <= self.trailing_stop:
             return "TRAIL_STOP"
         if price >= self.take_profit:
             return "TAKE_PROFIT"
+        
         return "HOLD"
 
-    def close(self, was_loss: bool = False):
+    def close(self, was_loss: bool = False, cooldown_candles: int = 0) -> None:
+        """Close the position."""
         self.active = False
         if was_loss:
-            self.cooldown = config.COOLDOWN_CANDLES
-            log.info(f"[{self.symbol}] Cooldown: {self.cooldown} intervals")
+            self.cooldown = cooldown_candles
 
-    def tick_cooldown(self):
+    def tick_cooldown(self) -> None:
+        """Decrement cooldown counter."""
         if self.cooldown > 0:
             self.cooldown -= 1
 
     def ready(self) -> bool:
+        """Check if ready for new entry."""
         return not self.active and self.cooldown == 0
 
 
-def run():
-    exchange  = connect()
-    positions = {s: Position(s) for s in config.SYMBOLS}
-    log.info(f"Bot started | pairs: {config.SYMBOLS} | {config.TIMEFRAME}")
+class AsyncTradingBot:
+    """Async trading bot with AI learning capabilities."""
+    
+    def __init__(self, config) -> None:
+        self.config = config
+        self.logger = setup_logging(config.log_level)
+        self.exchange: ccxt.binance | None = None
+        self.positions: Dict[str, Position] = {}
+        self.ai = TradingAI()  # Initialize AI model
+        self.trades_data: Dict[str, list] = defaultdict(list)  # Track data for retraining
+        self.retrain_counter = 0
+        
+    async def connect(self) -> None:
+        """Connect to exchange."""
+        try:
+            if self.config.paper_trading:
+                self.exchange = ccxt.binance({"enableRateLimit": True})
+                self.logger.info("[PAPER] Trading mode — no API key required")
+            else:
+                self.exchange = ccxt.binance({
+                    "apiKey": self.config.binance_api_key,
+                    "secret": self.config.binance_api_secret,
+                    "enableRateLimit": True,
+                    "options": {"defaultType": "spot"},
+                })
+                self.logger.warning("[LIVE] Trading mode — REAL MONEY AT RISK!")
+            
+            # Initialize positions
+            self.positions = {symbol: Position(symbol) for symbol in self.config.symbols}
+        except Exception as e:
+            self.logger.error(f"Failed to connect to exchange: {e}")
+            raise
 
-    while True:
-        for symbol in config.SYMBOLS:
-            try:
-                df    = fetch_ohlcv(exchange, symbol)
-                price = df["close"].iloc[-1]
-                pos   = positions[symbol]
-                pos.tick_cooldown()
+    async def fetch_ohlcv(self, symbol: str, limit: int = 250) -> pd.DataFrame:
+        """Fetch OHLCV data."""
+        try:
+            raw = self.exchange.fetch_ohlcv(symbol, self.config.timeframe, limit=limit)
+            df = pd.DataFrame(
+                raw,
+                columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+            raise
 
-                exit_reason = pos.check_exit(price)
-                if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
-                    log.info(f"[{symbol}] EXIT {exit_reason} @ {price:.2f}")
-                    place_order(exchange, "sell", symbol, price)
+    async def place_order(
+        self,
+        side: Literal["buy", "sell"],
+        symbol: str,
+        price: float,
+        ai_confidence: float = 0.5
+    ) -> bool:
+        """Place market order."""
+        try:
+            # Adjust position size based on AI win rate
+            base_amount = self.config.trade_amount_usdt
+            position_multiplier = self.ai.get_position_size_multiplier()
+            
+            # For BUY: also consider AI confidence
+            if side == "buy":
+                adjusted_amount = base_amount * position_multiplier * ai_confidence
+            else:
+                adjusted_amount = base_amount * position_multiplier
+            
+            qty = round(adjusted_amount / price, 6)
+            
+            if self.config.paper_trading:
+                confidence_str = f" (AI confidence: {ai_confidence:.0%})" if side == "buy" else ""
+                self.logger.info(f"[PAPER] {side.upper()} {qty} {symbol} @ {price:.2f}{confidence_str}")
+                return True
+            
+            order = self.exchange.create_market_order(symbol, side, qty)
+            self.logger.info(f"[LIVE] Order placed: {side.upper()} {qty} {symbol} @ {price:.2f}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Order failed for {symbol}: {e}")
+            return False
+
+    async def process_symbol(self, symbol: str) -> None:
+        """Process single symbol."""
+        try:
+            df = await self.fetch_ohlcv(symbol)
+            price = float(df["close"].iloc[-1])
+            pos = self.positions[symbol]
+            
+            pos.tick_cooldown()
+            
+            # Check for position exit
+            exit_reason = pos.check_exit(price, self.config.trailing_stop_pct)
+            if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
+                self.logger.info(f"[{symbol}] EXIT {exit_reason} @ {price:.2f}")
+                success = await self.place_order("sell", symbol, price)
+                if success:
                     was_loss = price < pos.entry_price
-                    pos.close(was_loss=was_loss)
+                    pnl = (price - pos.entry_price) * (self.config.trade_amount_usdt / pos.entry_price)
+                    
+                    # AI learns from this trade
+                    self.ai.update_from_trade(pnl, not was_loss)
+                    
+                    pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
+            
+            # Check for entry signal
+            elif pos.ready():
+                signal = get_signal(
+                    df,
+                    self.config.rsi_period,
+                    self.config.rsi_oversold,
+                    self.config.rsi_overbought,
+                )
+                
+                # Get AI confidence (0-1)
+                ai_confidence = self.ai.predict_entry_probability(df)
+                
+                # Only enter if signal + AI is confident enough
+                min_confidence = 0.45  # Lower threshold = more trades
+                if signal == "BUY" and ai_confidence > min_confidence:
+                    self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
+                    success = await self.place_order("buy", symbol, price, ai_confidence)
+                    if success:
+                        pos.open(price, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
+                elif signal == "BUY":
+                    self.logger.debug(f"[{symbol}] BUY signal ignored (AI confidence too low: {ai_confidence:.0%})")
+            
+            elif pos.active:
+                self.logger.debug(
+                    f"[{symbol}] price={price:.2f}  "
+                    f"trail={pos.trailing_stop:.2f}  TP={pos.take_profit:.2f}  "
+                    f"AI-conf={pos.ai_confidence:.0%}"
+                )
+            else:
+                self.logger.debug(f"[{symbol}] Cooldown: {pos.cooldown} intervals remaining")
+                
+        except asyncio.CancelledError:
+            self.logger.info(f"[{symbol}] Task cancelled")
+            raise
+        except Exception as e:
+            self.logger.error(f"[{symbol}] Error: {e}")
 
-                elif pos.ready():
-                    signal = get_signal(df, config.RSI_PERIOD, config.RSI_OVERSOLD, config.RSI_OVERBOUGHT)
-                    log.info(f"[{symbol}] price={price:.2f}  signal={signal}")
-                    if signal == "BUY":
-                        if place_order(exchange, "buy", symbol, price):
-                            pos.open(price)
-                elif pos.cooldown > 0:
-                    log.info(f"[{symbol}] Cooldown: {pos.cooldown} intervals remaining")
-                else:
-                    log.info(f"[{symbol}] price={price:.2f}  "
-                             f"trail={pos.trailing_stop:.2f}  TP={pos.take_profit:.2f}")
+    async def run(self) -> None:
+        """Main bot loop."""
+        await self.connect()
+        self.logger.info(f"🤖 Bot started | pairs: {self.config.symbols} | {self.config.timeframe}")
+        self.logger.info(f"🧠 AI Model active | Win rate: {self.ai.get_stats().get('win_rate', 'N/A')}%")
+        
+        try:
+            while True:
+                # Process all symbols concurrently
+                tasks = [self.process_symbol(symbol) for symbol in self.config.symbols]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Periodically log AI stats
+                self.retrain_counter += 1
+                if self.retrain_counter % 60 == 0:  # Every 60 iterations
+                    stats = self.ai.get_stats()
+                    self.logger.info(f"🤖 AI Stats: {stats}")
+                
+                await asyncio.sleep(self.config.check_interval)
+        except KeyboardInterrupt:
+            self.logger.info("Bot stopped by user")
+            self._print_final_stats()
+        except Exception as e:
+            self.logger.error(f"Bot error: {e}")
+            raise
+        finally:
+            if self.exchange:
+                await self.exchange.close()
+    
+    def _print_final_stats(self) -> None:
+        """Print final AI statistics."""
+        stats = self.ai.get_stats()
+        if stats.get("total_trades", 0) > 0:
+            self.logger.info("=" * 60)
+            self.logger.info("🤖 FINAL AI STATISTICS")
+            self.logger.info("=" * 60)
+            for key, value in stats.items():
+                self.logger.info(f"  {key}: {value}")
+            self.logger.info("=" * 60)
 
-            except Exception as e:
-                log.error(f"[{symbol}] Error: {e}")
 
-        time.sleep(config.CHECK_INTERVAL)
+async def main() -> None:
+    """Entry point."""
+    try:
+        config = load_config()
+        bot = AsyncTradingBot(config)
+        await bot.run()
+    except Exception as e:
+        logging.error(f"Failed to start bot: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(main())
