@@ -229,7 +229,7 @@ class StockTradingBot:
                 if self.ai and signal == "BUY":
                     ai_confidence = self.ai.predict_entry_probability(df)
                 
-                if signal == "BUY" and (not self.ai or ai_confidence > 0.45):
+                if signal == "BUY" and (not self.ai or ai_confidence > self.config.min_ai_confidence):
                     qty = int(self.config.trade_amount_usd / price)
                     if qty > 0:
                         self.logger.info(f"[{symbol}] BUY signal | AI: {ai_confidence:.0%}")

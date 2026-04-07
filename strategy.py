@@ -67,8 +67,9 @@ def get_signal(
     price: float = float(closes.iloc[-1])
     trend_up: bool = price > float(ma200.iloc[-1])
 
-    # Buy signal: RSI crosses below oversold level AND price above 200 MA
-    if trend_up and prev_rsi >= oversold and curr_rsi < oversold:
+    # Buy signal: RSI recovers ABOVE oversold level AND price above 200 MA
+    # (Not RSI falling INTO oversold - that would be the start of further decline)
+    if trend_up and prev_rsi < oversold and curr_rsi >= oversold:
         return "BUY"
     
     return "HOLD"

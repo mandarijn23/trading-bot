@@ -64,6 +64,7 @@ class StockTradingConfig(BaseSettings):
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, env="STOCK_USE_AI")
+    min_ai_confidence: float = Field(default=0.45, ge=0, le=1, env="STOCK_MIN_AI_CONFIDENCE")
 
 
 def load_stock_config() -> StockTradingConfig:

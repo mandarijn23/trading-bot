@@ -16,7 +16,7 @@ from typing import Dict, Literal
 from datetime import datetime
 from collections import defaultdict
 
-import ccxt
+import ccxt.async_support as ccxt
 import pandas as pd
 
 from config import load_config
@@ -140,7 +140,7 @@ class AsyncTradingBot:
     async def fetch_ohlcv(self, symbol: str, limit: int = 250) -> pd.DataFrame:
         """Fetch OHLCV data."""
         try:
-            raw = self.exchange.fetch_ohlcv(symbol, self.config.timeframe, limit=limit)
+            raw = await self.exchange.fetch_ohlcv(symbol, self.config.timeframe, limit=limit)
             df = pd.DataFrame(
                 raw,
                 columns=["timestamp", "open", "high", "low", "close", "volume"]
@@ -160,15 +160,13 @@ class AsyncTradingBot:
     ) -> bool:
         """Place market order."""
         try:
-            # Adjust position size based on AI win rate
+            # Adjust position size based on AI win rate and trend
             base_amount = self.config.trade_amount_usdt
             position_multiplier = self.ai.get_position_size_multiplier()
             
-            # For BUY: also consider AI confidence
-            if side == "buy":
-                adjusted_amount = base_amount * position_multiplier * ai_confidence
-            else:
-                adjusted_amount = base_amount * position_multiplier
+            # Position size = base * win_rate_multiplier (not confidence)
+            # AI confidence is used as FILTER only, not for sizing
+            adjusted_amount = base_amount * position_multiplier
             
             qty = round(adjusted_amount / price, 6)
             
@@ -177,7 +175,7 @@ class AsyncTradingBot:
                 self.logger.info(f"[PAPER] {side.upper()} {qty} {symbol} @ {price:.2f}{confidence_str}")
                 return True
             
-            order = self.exchange.create_market_order(symbol, side, qty)
+            order = await self.exchange.create_market_order(symbol, side, qty)
             self.logger.info(f"[LIVE] Order placed: {side.upper()} {qty} {symbol} @ {price:.2f}")
             return True
         except Exception as e:
@@ -220,8 +218,7 @@ class AsyncTradingBot:
                 ai_confidence = self.ai.predict_entry_probability(df)
                 
                 # Only enter if signal + AI is confident enough
-                min_confidence = 0.45  # Lower threshold = more trades
-                if signal == "BUY" and ai_confidence > min_confidence:
+                if signal == "BUY" and ai_confidence > self.config.min_ai_confidence:
                     self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
                     success = await self.place_order("buy", symbol, price, ai_confidence)
                     if success:
@@ -271,7 +268,10 @@ class AsyncTradingBot:
             raise
         finally:
             if self.exchange:
-                await self.exchange.close()
+                try:
+                    await self.exchange.close()
+                except Exception:
+                    pass  # Exchange already closed or doesn't support async close
     
     def _print_final_stats(self) -> None:
         """Print final AI statistics."""

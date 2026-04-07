@@ -46,6 +46,7 @@ class TradingConfig(BaseSettings):
     paper_trading: bool = Field(default=True, env="PAPER_TRADING")
     check_interval: int = Field(default=60, gt=0, env="CHECK_INTERVAL")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    min_ai_confidence: float = Field(default=0.45, ge=0, le=1, env="MIN_AI_CONFIDENCE")
     
     @field_validator("rsi_oversold", mode="before")
     @classmethod
