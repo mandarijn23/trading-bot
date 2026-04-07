@@ -22,15 +22,24 @@ try:
     # Try Random Forest first (lightweight, better on small datasets)
     from ml_model_rf import TradingAI
     HAS_AI = True
-    print("✅ Using Random Forest AI model")
 except ImportError:
     # Fall back to TensorFlow
     try:
         from ml_model import TradingAI
         HAS_AI = True
-        print("✅ Using TensorFlow AI model")
     except ImportError:
         HAS_AI = False
+
+try:
+    from discord_alerts import discord
+except ImportError:
+    discord = None
+
+try:
+    from model_retrainer import ModelRetrainer
+    HAS_RETRAINER = True
+except ImportError:
+    HAS_RETRAINER = False
 
 
 # Configure logging
@@ -128,6 +137,7 @@ class StockTradingBot:
         self.api = None
         self.positions: Dict[str, StockPosition] = {}
         self.ai = TradingAI() if HAS_AI and config.use_ai else None
+        self.retrainer = ModelRetrainer(retrain_interval=20) if HAS_RETRAINER and HAS_AI else None
         self.daily_pnl = 0.0  # Track daily P&L for max loss limit
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
         
@@ -240,6 +250,10 @@ class StockTradingBot:
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
                     
+                    # Send Discord notification
+                    if discord:
+                        discord.notify_sell(symbol, pos.entry_price, price, pos.quantity, pnl_pct, exit_reason)
+                    
                     pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
             
             # Check for entry
@@ -276,6 +290,9 @@ class StockTradingBot:
                         if success:
                             self._log_trade(symbol, "buy", price, qty, ai_confidence)
                             pos.open(price, qty, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence, atr_stop=sig_details.stop_loss_atr)
+                            # Send Discord notification
+                            if discord:
+                                discord.notify_buy(symbol, price, qty, ai_confidence)
             elif pos.active:
                 self.logger.debug(f"[{symbol}] ${price:.2f} TP=${pos.take_profit:.2f} TS=${pos.trailing_stop:.2f}")
             else:
@@ -361,6 +378,19 @@ class StockTradingBot:
             while True:
                 for symbol in self.config.symbols:
                     self.process_symbol(symbol)
+                
+                # Check if model retraining is needed
+                if self.retrainer and self.ai and self.retrainer.should_retrain():
+                    self.logger.info("🧠 Triggering model retraining...")
+                    try:
+                        self.retrainer.retrain_model(self.ai)
+                        self.logger.info("✅ Model retraining complete")
+                        if discord:
+                            discord.notify_warning("🧠 Model retraining complete")
+                    except Exception as e:
+                        self.logger.error(f"❌ Model retraining failed: {e}")
+                        if discord:
+                            discord.notify_error(f"Model retraining failed: {e}")
                 
                 time.sleep(self.config.check_interval)
                 
