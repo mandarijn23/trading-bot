@@ -236,7 +236,42 @@ python ai_manage.py reset
 
 ---
 
-## 📁 Project Structure
+## � Discord Notifications
+
+Get real-time alerts for every trade! 🚀
+
+**Setup in 3 minutes:**
+
+1. Create a Discord webhook (see [DISCORD_SETUP.md](DISCORD_SETUP.md))
+2. Add to `.env`:
+   ```env
+   DISCORD_WEBHOOK_URL=https://discordapp.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+   ```
+3. Test it:
+   ```bash
+   python cli.py test-discord
+   ```
+
+**You'll receive:**
+- 🟢 BUY alerts with entry price, quantity, AI confidence
+- 🔴 SELL alerts with P&L, exit reason, profit/loss color
+- 📊 Daily summaries with trade count and win rate
+- ⚠️ Warnings for model retraining and max position limits
+- 🔴 Error alerts for critical failures
+
+**Example Alert:**
+```
+🟢 BUY SIGNAL: BTC/USDT
+Price: $45,250.00
+Quantity: 0.5
+AI Confidence: 78%
+```
+
+👉 **Full setup guide**: [DISCORD_SETUP.md](DISCORD_SETUP.md)
+
+---
+
+## �📁 Project Structure
 
 ```
 trading-bot/

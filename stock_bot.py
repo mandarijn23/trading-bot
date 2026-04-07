@@ -374,6 +374,19 @@ class StockTradingBot:
             stats = self.ai.get_stats()
             self.logger.info(f"🧠 AI active | Trades: {stats.get('total_trades', 0)} | WR: {stats.get('win_rate', 0)}%")
         
+        # 🔔 Discord startup notification
+        if discord:
+            discord.send_message(
+                "🚀 Stock Bot Started",
+                {
+                    "Symbols": ", ".join(self.config.symbols),
+                    "Timeframe": self.config.timeframe,
+                    "Mode": "PAPER TRADING" if self.config.paper_trading else "LIVE TRADING ⚠️",
+                    "Status": "Ready",
+                },
+                color=3066993  # Green
+            )
+        
         try:
             while True:
                 for symbol in self.config.symbols:
@@ -399,8 +412,19 @@ class StockTradingBot:
             if self.ai:
                 stats = self.ai.get_stats()
                 self.logger.info(f"Final AI Stats: {stats}")
+                # 🔔 Send final summary to Discord
+                if discord and stats.get("total_trades", 0) > 0:
+                    discord.notify_daily_summary({
+                        "trades": stats.get("total_trades", 0),
+                        "wins": stats.get("wins", 0),
+                        "win_rate": f"{stats.get('win_rate', 0):.1f}%",
+                        "pnl": f"{stats.get('total_pnl_pct', 0):+.2f}%",
+                    })
         except Exception as e:
             self.logger.error(f"Bot error: {e}")
+            # 🔔 Send error notification to Discord
+            if discord:
+                discord.notify_error("Stock Bot crashed!", {"Error": str(e)})
             raise
 
 
@@ -412,6 +436,8 @@ def main() -> None:
         bot.run()
     except Exception as e:
         logging.error(f"Failed to start bot: {e}")
+        if discord:
+            discord.notify_error("Stock Bot startup failed!", {"Error": str(e)})
         sys.exit(1)
 
 

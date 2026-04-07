@@ -77,7 +77,31 @@ $ python stock_bot.py
 
 ---
 
-## 📁 File Structure
+## � Discord Real-Time Alerts (Optional)
+
+Get live notifications for every trade! 📱
+
+**Setup (2 minutes):**
+
+```bash
+# 1. Create Discord webhook (see DISCORD_SETUP.md)
+# 2. Add to .env:
+DISCORD_WEBHOOK_URL=https://discordapp.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+
+# 3. Test:
+python cli.py test-discord
+```
+
+**See alerts for:**
+- 🟢 Every BUY with entry price, quantity, AI confidence
+- 🔴 Every SELL with profit/loss and exit reason
+- 📊 Daily summary with trade count and win rate
+
+👉 **[Full Discord setup guide →](DISCORD_SETUP.md)**
+
+---
+
+## �📁 File Structure
 
 ```
 trading-bot/

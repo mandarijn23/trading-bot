@@ -24,6 +24,7 @@ from strategy import get_signal
 from ml_model import TradingAI
 from portfolio import Portfolio
 from risk import RiskManager
+from discord_alerts import discord
 
 
 # Configure logging
@@ -206,12 +207,17 @@ class AsyncTradingBot:
                 if success:
                     was_loss = price < pos.entry_price
                     pnl = (price - pos.entry_price) * (self.config.trade_amount_usdt / pos.entry_price)
+                    pnl_pct = (pnl / (pos.entry_price * self.config.trade_amount_usdt)) * 100 if pos.entry_price > 0 else 0
                     
                     # 📊 Update portfolio
                     self.portfolio.close_position(symbol, price, datetime.now())
                     
                     # AI learns from this trade
                     self.ai.update_from_trade(pnl, not was_loss)
+                    
+                    # 🔔 Discord notification
+                    qty = round(self.config.trade_amount_usdt / pos.entry_price, 6)
+                    discord.notify_sell(symbol, pos.entry_price, price, qty, pnl_pct, exit_reason)
                     
                     pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
             
@@ -239,10 +245,12 @@ class AsyncTradingBot:
                     success = await self.place_order("buy", symbol, price, ai_confidence)
                     if success:
                         # 📊 Register in portfolio
-                        self.portfolio.open_position(symbol, price, 
-                                                   self.config.trade_amount_usdt / price,
-                                                   datetime.now())
+                        qty = round(self.config.trade_amount_usdt / price, 6)
+                        self.portfolio.open_position(symbol, price, qty, datetime.now())
                         pos.open(price, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
+                        
+                        # 🔔 Discord notification
+                        discord.notify_buy(symbol, price, int(qty), ai_confidence)
                 elif signal == "BUY":
                     self.logger.debug(f"[{symbol}] BUY signal ignored (AI confidence too low: {ai_confidence:.0%})")
             
@@ -266,6 +274,18 @@ class AsyncTradingBot:
         await self.connect()
         self.logger.info(f"🤖 Bot started | pairs: {self.config.symbols} | {self.config.timeframe}")
         self.logger.info(f"🧠 AI Model active | Win rate: {self.ai.get_stats().get('win_rate', 'N/A')}%")
+        
+        # 🔔 Discord startup notification
+        discord.send_message(
+            "🚀 Bot Started",
+            {
+                "Pairs": ", ".join(self.config.symbols),
+                "Timeframe": self.config.timeframe,
+                "Mode": "PAPER TRADING" if self.config.paper_trading else "LIVE TRADING ⚠️",
+                "Status": "Ready",
+            },
+            color=3066993  # Green
+        )
         
         try:
             while True:
@@ -291,6 +311,8 @@ class AsyncTradingBot:
             self._print_final_stats()
         except Exception as e:
             self.logger.error(f"Bot error: {e}")
+            # 🔔 Send error notification to Discord
+            discord.notify_error("Bot crashed!", {"Error": str(e)})
             raise
         finally:
             if self.exchange:
@@ -309,6 +331,14 @@ class AsyncTradingBot:
             for key, value in stats.items():
                 self.logger.info(f"  {key}: {value}")
             self.logger.info("=" * 60)
+            
+            # 🔔 Send final summary to Discord
+            discord.notify_daily_summary({
+                "trades": stats.get("total_trades", 0),
+                "wins": stats.get("wins", 0),
+                "win_rate": f"{stats.get('win_rate', 0):.1f}%",
+                "pnl": f"{stats.get('total_pnl_pct', 0):+.2f}%",
+            })
 
 
 async def main() -> None:

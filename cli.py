@@ -30,18 +30,72 @@ def cli():
 @cli.command()
 def test_discord():
     """Test Discord webhook connection."""
-    click.echo("🔗 Testing Discord webhook...")
+    click.echo("🔗 Testing Discord webhook...\n")
     
-    if not discord:
-        click.echo("❌ Discord not initialized")
+    if not discord.enabled:
+        click.echo("❌ Discord not enabled!")
+        click.echo("\nSetup Discord notifications:")
+        click.echo("  1. Create a Discord server (if you don't have one)")
+        click.echo("  2. Go to Server Settings → Integrations → Webhooks → New Webhook")
+        click.echo("  3. Copy the webhook URL")
+        click.echo("  4. Add to .env: DISCORD_WEBHOOK_URL=<your_webhook_url>")
+        click.echo("\n  📖 Full guide: https://discord.com/developers/applications")
         return
     
     try:
-        # Send test notification
-        discord.notify_warning("✅ Discord webhook test successful!")
-        click.echo("✅ Discord webhook is working!")
+        # Test 1: Basic message
+        click.echo("Test 1: Sending test message...")
+        result = discord.send_message(
+            "🧪 Discord Integration Test",
+            {
+                "Status": "✅ Working",
+                "Timestamp": datetime.now().isoformat(),
+                "Bot": "Trading-Bot",
+            }
+        )
+        if result:
+            click.echo("  ✅ Basic message sent")
+        else:
+            click.echo("  ❌ Failed to send basic message")
+            return
+        
+        # Test 2: Buy notification
+        click.echo("Test 2: Sending BUY notification...")
+        result = discord.notify_buy("BTC/USDT", 45000.0, 1, 0.75)
+        if result:
+            click.echo("  ✅ BUY notification sent")
+        else:
+            click.echo("  ❌ Failed to send BUY notification")
+            return
+        
+        # Test 3: Sell notification
+        click.echo("Test 3: Sending SELL notification...")
+        result = discord.notify_sell("BTC/USDT", 45000.0, 46000.0, 1, 2.22, "TAKE_PROFIT")
+        if result:
+            click.echo("  ✅ SELL notification sent")
+        else:
+            click.echo("  ❌ Failed to send SELL notification")
+            return
+        
+        # Test 4: Summary
+        click.echo("Test 4: Sending daily summary...")
+        result = discord.notify_daily_summary({
+            "trades": 5,
+            "wins": 4,
+            "win_rate": "80%",
+            "pnl": "+2.45%",
+        })
+        if result:
+            click.echo("  ✅ Daily summary sent")
+        else:
+            click.echo("  ❌ Failed to send daily summary")
+            return
+        
+        click.echo("\n✅ All Discord tests passed!")
+        click.echo("🎉 Your trading bot is ready to send notifications!\n")
+        
     except Exception as e:
-        click.echo(f"❌ Discord webhook failed: {e}")
+        click.echo(f"❌ Discord test failed: {e}")
         sys.exit(1)
 
 
