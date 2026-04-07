@@ -3,18 +3,52 @@
   "before": {
     "trades": 10,
     "win_rate": 0.4,
+    "expectancy": -0.005341417067831306,
     "avg_win": 0.012885735044607651,
     "avg_loss": -0.01749285180945728,
-    "expectancy": -0.005341417067831306,
-    "avg_adverse": -0.017909464354039884
+    "avg_adverse": -0.017909464354039884,
+    "segments": [
+      {
+        "trades": 1,
+        "win_rate": 1.0,
+        "expectancy": 0.011188396608942821
+      },
+      {
+        "trades": 4,
+        "win_rate": 0.5,
+        "expectancy": 0.0022297687900545236
+      },
+      {
+        "trades": 5,
+        "win_rate": 0.2,
+        "expectancy": -0.014704328489494796
+      }
+    ]
   },
   "after": {
     "trades": 3,
     "win_rate": 0.6666666666666666,
+    "expectancy": 0.015719675470865713,
     "avg_win": 0.03379615804743975,
     "avg_loss": -0.02043328968228236,
-    "expectancy": 0.015719675470865713,
-    "avg_adverse": -0.017218939937492503
+    "avg_adverse": -0.017218939937492503,
+    "segments": [
+      {
+        "trades": 2,
+        "win_rate": 1.0,
+        "expectancy": 0.03379615804743975
+      },
+      {
+        "trades": 1,
+        "win_rate": 0.0,
+        "expectancy": -0.02043328968228236
+      },
+      {
+        "trades": 0,
+        "win_rate": 0.0,
+        "expectancy": 0.0
+      }
+    ]
   },
   "trade_reduction_pct": 70.0,
   "expectancy_delta_pct_points": 2.106109253869702,
