@@ -6,6 +6,8 @@ ACTION="${2:-}"
 SERVICE_NAME="trading-bot-stock.service"
 SERVICE_UNIT="${SERVICE_NAME}"
 TIMER_UNIT="trading-bot-stock.timer"
+DAILY_SERVICE_UNIT="trading-bot-daily-profile-graph.service"
+DAILY_TIMER_UNIT="trading-bot-daily-profile-graph.timer"
 HEALTH_CHECK="$APP_DIR/nas_health_check.sh"
 REPAIR_SCRIPT="$APP_DIR/nas_repair.sh"
 PRECHECK="$APP_DIR/paper_launch_check.py"
@@ -29,7 +31,9 @@ Allowed actions:
   ai-pull-primary   Pull the primary NAS model
   ai-pull-fallback  Pull the fallback NAS model
   logs         Show recent service logs
+  daily-status Show daily profile+graph timer status
   restart      Restart the stock service
+  daily-run    Run profile rotation + graph push now
   stop         Stop the stock service
   start        Start the stock service
 EOF
@@ -93,6 +97,13 @@ case "$ACTION" in
     ;;
   logs)
     journalctl -u "$SERVICE_UNIT" -n 100 --no-pager || true
+    ;;
+  daily-status)
+    systemctl status "$DAILY_SERVICE_UNIT" --no-pager || true
+    systemctl status "$DAILY_TIMER_UNIT" --no-pager || true
+    ;;
+  daily-run)
+    run_confirmed "Run daily profile+graph now" sudo systemctl start "$DAILY_SERVICE_UNIT"
     ;;
   restart)
     run_confirmed "Restart stock service" sudo systemctl restart "$SERVICE_UNIT"

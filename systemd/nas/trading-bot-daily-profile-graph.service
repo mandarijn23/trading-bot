@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading Bot Daily Profile Rotation + Discord Graph
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nas/trading-bot
+ExecStart=/home/nas/trading-bot/tools/daily_profile_graph.sh /home/nas/trading-bot
+User=nas
+Group=nas

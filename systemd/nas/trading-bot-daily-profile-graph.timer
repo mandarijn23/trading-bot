@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Daily Profile Rotation + Discord Graph Before Market Open
+
+[Timer]
+OnCalendar=Mon..Fri 11:45:00
+Persistent=true
+Unit=trading-bot-daily-profile-graph.service
+
+[Install]
+WantedBy=timers.target
