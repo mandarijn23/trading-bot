@@ -22,6 +22,11 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
+if command -v git >/dev/null 2>&1; then
+  git config --global --add safe.directory "$APP_DIR" || true
+  echo "[OK] Marked $APP_DIR as a safe Git directory"
+fi
+
 echo "[INFO] Installing trading bot units into $SYSTEMD_DIR"
 for unit in "${UNIT_FILES[@]}"; do
   src="$ROOT_DIR/$unit"
