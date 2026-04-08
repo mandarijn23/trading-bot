@@ -21,7 +21,7 @@ import pandas as pd
 
 from config import load_config
 from strategy import get_signal
-from ml_model import TradingAI
+from ml_model_rf import TradingAI
 from portfolio import Portfolio
 from risk import RiskManager
 from discord_alerts import discord
@@ -72,7 +72,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
 
 
 class Position:
-    """Manages an active trading position."""
+    """Manages an active trading position with thread-safe state."""
     
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol
@@ -84,47 +84,52 @@ class Position:
         self.cooldown = 0  # intervals to wait before next entry
         self.entry_time = None
         self.ai_confidence = 0.0  # AI entry probability
+        self._lock = asyncio.Lock()  # Prevent race conditions on state changes
 
-    def open(self, price: float, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5) -> None:
-        """Open a new position."""
-        self.active = True
-        self.entry_price = price
-        self.peak_price = price
-        self.trailing_stop = price * (1 - stop_loss_pct)
-        self.take_profit = price * (1 + take_profit_pct)
-        self.entry_time = datetime.now()
-        self.ai_confidence = ai_confidence
-
-    def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
-        """Check if position should be closed."""
-        if not self.active:
-            return "HOLD"
-        
-        if price > self.peak_price:
+    async def open(self, price: float, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5) -> None:
+        """Open a new position (thread-safe)."""
+        async with self._lock:
+            self.active = True
+            self.entry_price = price
             self.peak_price = price
-            self.trailing_stop = price * (1 - trailing_stop_pct)
-        
-        if price <= self.trailing_stop:
-            return "TRAIL_STOP"
-        if price >= self.take_profit:
-            return "TAKE_PROFIT"
-        
-        return "HOLD"
+            self.trailing_stop = price * (1 - stop_loss_pct)
+            self.take_profit = price * (1 + take_profit_pct)
+            self.entry_time = datetime.now()
+            self.ai_confidence = ai_confidence
 
-    def close(self, was_loss: bool = False, cooldown_candles: int = 0) -> None:
-        """Close the position."""
-        self.active = False
-        if was_loss:
-            self.cooldown = cooldown_candles
+    async def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
+        """Check if position should be closed (thread-safe)."""
+        async with self._lock:
+            if not self.active:
+                return "HOLD"
+            
+            if price > self.peak_price:
+                self.peak_price = price
+                self.trailing_stop = price * (1 - trailing_stop_pct)
+            
+            if price <= self.trailing_stop:
+                return "TRAIL_STOP"
+            if price >= self.take_profit:
+                return "TAKE_PROFIT"
+            
+            return "HOLD"
+
+    async def close(self, was_loss: bool = False, cooldown_candles: int = 0) -> None:
+        """Close the position (thread-safe)."""
+        async with self._lock:
+            self.active = False
+            if was_loss:
+                self.cooldown = cooldown_candles
 
     def tick_cooldown(self) -> None:
         """Decrement cooldown counter."""
         if self.cooldown > 0:
             self.cooldown -= 1
 
-    def ready(self) -> bool:
-        """Check if ready for new entry."""
-        return not self.active and self.cooldown == 0
+    async def ready(self) -> bool:
+        """Check if ready for new entry (thread-safe)."""
+        async with self._lock:
+            return not self.active and self.cooldown == 0
 
 
 class AsyncTradingBot:
