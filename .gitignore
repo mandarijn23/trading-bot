@@ -52,3 +52,4 @@ backtest.log
 
 # Data
 *.csv
+logs/profile_cycle_state.env
