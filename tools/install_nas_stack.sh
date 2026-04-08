@@ -27,6 +27,14 @@ if command -v git >/dev/null 2>&1; then
   echo "[OK] Marked $APP_DIR as a safe Git directory"
 fi
 
+chmod +x \
+  "$APP_DIR/run_stock_session.sh" \
+  "$APP_DIR/tools/run_stock_session.sh" \
+  "$APP_DIR/tools/nas_health_check.sh" \
+  "$APP_DIR/tools/hourly_train_and_report.sh" \
+  "$APP_DIR/tools/daily_profile_graph.sh" \
+  "$APP_DIR/tools/rotate_stock_profile.sh"
+
 echo "[INFO] Installing trading bot units into $SYSTEMD_DIR"
 for unit in "${UNIT_FILES[@]}"; do
   src="$ROOT_DIR/$unit"
@@ -46,6 +54,12 @@ sudo systemctl enable --now trading-bot-stock.service
 sudo systemctl enable --now trading-bot-watchdog.timer
 sudo systemctl enable --now trading-bot-daily-profile-graph.timer
 sudo systemctl enable --now trading-bot-train-hourly.timer
+
+echo "[INFO] Restarting active units to apply updated service definitions"
+sudo systemctl restart trading-bot-stock.service || true
+sudo systemctl restart trading-bot-watchdog.timer || true
+sudo systemctl restart trading-bot-daily-profile-graph.timer || true
+sudo systemctl restart trading-bot-train-hourly.timer || true
 
 echo "[OK] NAS stack installed and enabled"
 echo "[INFO] Verify with: systemctl status trading-bot-stock.service trading-bot-watchdog.timer trading-bot-daily-profile-graph.timer trading-bot-train-hourly.timer --no-pager"

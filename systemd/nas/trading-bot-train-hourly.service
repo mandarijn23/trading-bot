@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/home/nas/trading-bot
-ExecStart=/home/nas/trading-bot/hourly_train_and_report.sh /home/nas/trading-bot
+ExecStart=/bin/bash /home/nas/trading-bot/tools/hourly_train_and_report.sh /home/nas/trading-bot
 User=nas
 Group=nas
 StandardOutput=journal
