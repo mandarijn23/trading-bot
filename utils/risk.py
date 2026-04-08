@@ -233,12 +233,13 @@ class RiskManager:
         # Position size = Risk amount / Risk per unit
         position_size = risk_amount / risk_per_unit
         
-        # Don't risk more than 30% of equity on single trade
-        max_size_amt = (portfolio.equity * 0.3)
+        # Don't risk more than the configured share of equity on a single trade
+        max_position_pct = getattr(self.config, 'max_position_value_pct', 0.25)
+        max_size_amt = (portfolio.equity * max_position_pct)
         max_position = max_size_amt / entry_price
         
         if position_size > max_position:
-            reason = "Limited to 30% equity max"
+            reason = f"Limited to {max_position_pct*100:.0f}% equity max"
             position_size = max_position
         else:
             reason = f"2% risk ({risk_pct*100:.0f}% of equity)"

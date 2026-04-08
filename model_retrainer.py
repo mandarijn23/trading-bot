@@ -31,14 +31,21 @@ class ModelRetrainer:
             try:
                 df = pd.read_csv(csv_file)
                 self.trade_history = df.to_dict('records')
-                self.trades_since_retrain = len(self.trade_history) % self.retrain_interval
+                if "side" in df.columns:
+                    closed_trades = int((df["side"] == "sell").sum())
+                else:
+                    closed_trades = len(self.trade_history)
+                self.trades_since_retrain = closed_trades % self.retrain_interval
             except Exception as e:
                 print(f"❌ Failed to load trade history: {e}")
     
     def should_retrain(self) -> bool:
-        """Check if it's time to retrain model."""
-        self.trades_since_retrain += 1
+        """Check if enough closed trades have accumulated since last retrain."""
         return self.trades_since_retrain >= self.retrain_interval
+
+    def record_closed_trade(self) -> None:
+        """Record one newly closed trade."""
+        self.trades_since_retrain += 1
     
     def prepare_training_data(self) -> tuple:
         """
@@ -90,6 +97,8 @@ class ModelRetrainer:
             True if retrain succeeded
         """
         try:
+            # Reload to include the latest persisted trade history.
+            self.load_trade_history()
             training_data = self.prepare_training_data()
             if training_data is None:
                 return False

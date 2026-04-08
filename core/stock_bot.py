@@ -24,6 +24,8 @@ except ImportError:
 from stock_config import load_stock_config
 from strategy import get_signal, get_signal_enhanced
 from market_hours import USMarketSession
+from portfolio import Portfolio
+from risk import RiskManager
 
 try:
     # Try Random Forest first (lightweight, better on small datasets)
@@ -173,7 +175,10 @@ class StockTradingBot:
         self.api = None
         self.positions: Dict[str, StockPosition] = {}
         self.ai = TradingAI() if HAS_AI and config.use_ai else None
-        self.retrainer = ModelRetrainer(retrain_interval=20) if HAS_RETRAINER and HAS_AI else None
+        retrain_interval = getattr(self.config, "retrain_interval_trades", 20)
+        self.retrainer = ModelRetrainer(retrain_interval=retrain_interval) if HAS_RETRAINER and self.ai else None
+        self.portfolio = Portfolio(starting_balance=getattr(self.config, "starting_balance", 100000.0))
+        self.risk = RiskManager(config)
         self.daily_pnl = 0.0  # Track daily P&L for max loss limit
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
         self.market = USMarketSession()
@@ -181,6 +186,8 @@ class StockTradingBot:
         self.loop_count = 0
         self.universe_symbols = self._build_universe()
         self.active_symbols = list(self.config.symbols)
+        self._insufficient_data_last_log: Dict[str, datetime] = {}
+        self._account_snapshot_last_log: datetime | None = None
 
     def _build_universe(self) -> List[str]:
         """Build a unique symbol universe while preserving order."""
@@ -257,6 +264,124 @@ class StockTradingBot:
             self.logger.info(
                 f"Dynamic selection updated | Active symbols: {', '.join(self.active_symbols)}"
             )
+
+    def _sync_from_account(self) -> None:
+        """Sync live Alpaca account balances and positions into local state."""
+        if not self.api:
+            return
+
+        try:
+            account = self.api.get_account()
+            self.portfolio.sync_from_account(account)
+            self.portfolio.new_day(datetime.now().date())
+            self.daily_pnl = self.portfolio.daily_pnl_pct()
+
+            live_positions = {position.symbol: position for position in self.api.list_positions()}
+            for symbol in list(self.positions.keys()):
+                local_position = self.positions.get(symbol) or StockPosition(symbol)
+                live_position = live_positions.get(symbol)
+
+                if live_position is None:
+                    local_position.active = False
+                    local_position.quantity = 0
+                    self.positions[symbol] = local_position
+                    continue
+
+                try:
+                    entry_price = float(live_position.avg_entry_price)
+                    quantity = int(float(live_position.qty))
+                except (TypeError, ValueError):
+                    continue
+
+                local_position.active = True
+                local_position.entry_price = entry_price
+                local_position.peak_price = max(local_position.peak_price, entry_price)
+                local_position.trailing_stop = entry_price * (1 - self.config.stop_loss_pct)
+                local_position.take_profit = entry_price * (1 + self.config.take_profit_pct)
+                local_position.quantity = quantity
+                self.positions[symbol] = local_position
+
+            self._log_account_snapshot(account)
+        except Exception as e:
+            self.logger.warning(f"Failed to sync Alpaca account state: {e}")
+
+    def _current_gross_exposure_value(self) -> float:
+        """Estimate current gross exposure from synced positions."""
+        total = 0.0
+        for position in self.positions.values():
+            if position.active and position.quantity > 0 and position.entry_price > 0:
+                total += position.quantity * position.entry_price
+        return total
+
+    def _log_account_snapshot(self, account) -> None:
+        """Emit a throttled snapshot of live account and portfolio stats."""
+        cooldown_sec = max(0, int(getattr(self.config, "account_snapshot_log_cooldown_sec", 900)))
+        now = datetime.now()
+        if self._account_snapshot_last_log and (now - self._account_snapshot_last_log).total_seconds() < cooldown_sec:
+            return
+
+        gross_exposure = self._current_gross_exposure_value()
+        equity = self.portfolio.equity
+        exposure_pct = (gross_exposure / equity * 100.0) if equity > 0 else 0.0
+        stats = self.portfolio.get_stats()
+
+        account_cash = getattr(account, "cash", None)
+        account_buying_power = getattr(account, "buying_power", None)
+        unrealized_plpc = getattr(account, "unrealized_plpc", None)
+        realized_plpc = getattr(account, "realized_plpc", None)
+
+        parts = [
+            f"equity=${equity:.2f}",
+            f"cash=${self.portfolio.balance:.2f}",
+            f"buying_power=${self.portfolio.buying_power:.2f}",
+            f"day_pnl=${stats['daily_pnl']:+.2f} ({stats['daily_pnl_pct']:+.2f}%)",
+            f"total_return={stats['total_return_pct']:+.2f}%",
+            f"gross_exposure=${gross_exposure:.2f} ({exposure_pct:.1f}%)",
+        ]
+
+        if account_cash is not None:
+            parts.append(f"alpaca_cash=${float(account_cash):.2f}")
+        if account_buying_power is not None:
+            parts.append(f"alpaca_bp=${float(account_buying_power):.2f}")
+        if unrealized_plpc is not None:
+            parts.append(f"unrealized_plpc={float(unrealized_plpc)*100.0:+.2f}%")
+        if realized_plpc is not None:
+            parts.append(f"realized_plpc={float(realized_plpc)*100.0:+.2f}%")
+
+        self.logger.info("Alpaca snapshot | " + " | ".join(parts))
+        self._account_snapshot_last_log = now
+
+    def _size_order(self, symbol: str, price: float, stop_loss_price: float, atr_value: float) -> tuple[int, str]:
+        """Size an order from live equity and stop distance."""
+        position_size = self.risk.calculate_position_size(
+            self.portfolio,
+            entry_price=price,
+            stop_loss_price=stop_loss_price,
+            symbol=symbol,
+            atr_value=atr_value,
+        )
+
+        qty = int(position_size.shares)
+        max_affordable_qty = int((self.portfolio.balance * 0.95) / price) if self.portfolio.balance > 0 else 0
+        qty = min(qty, max_affordable_qty)
+
+        max_gross_exposure_pct = getattr(self.config, "max_gross_exposure_pct", 0.5)
+        gross_exposure = self._current_gross_exposure_value()
+        exposure_budget = max(0.0, (self.portfolio.equity * max_gross_exposure_pct) - gross_exposure)
+        max_exposure_qty = int(exposure_budget / price) if price > 0 else 0
+        qty = min(qty, max_exposure_qty)
+
+        if qty <= 0:
+            if exposure_budget <= 0:
+                exposure_pct = (gross_exposure / self.portfolio.equity * 100.0) if self.portfolio.equity > 0 else 0.0
+                return 0, f"Gross exposure cap reached ({exposure_pct:.1f}%/{max_gross_exposure_pct*100:.1f}%)"
+            return 0, position_size.reason
+
+        reason = position_size.reason
+        if qty < int(position_size.shares):
+            reason = f"{reason} | exposure cap ${exposure_budget:.2f} left"
+
+        return qty, reason
         
     def connect(self) -> None:
         """Connect to Alpaca."""
@@ -282,6 +407,7 @@ class StockTradingBot:
             # Initialize positions
             self.positions = {s: StockPosition(s) for s in self.universe_symbols}
             self._refresh_active_symbols()
+            self._sync_from_account()
             
         except Exception as e:
             self.logger.error(f"Failed to connect: {e}")
@@ -344,11 +470,23 @@ class StockTradingBot:
     def process_symbol(self, symbol: str) -> None:
         """Process single stock."""
         try:
-            df = self.fetch_bars(symbol)
-            
-            if df.empty or len(df) < 200:
-                self.logger.warning(f"[{symbol}] Insufficient data")
+            bars_limit = getattr(self.config, "bars_limit", 250)
+            min_bars = max(getattr(self.config, "min_bars", 45), self.config.rsi_period + 2)
+            df = self.fetch_bars(symbol, limit=bars_limit)
+
+            if df.empty or len(df) < min_bars:
+                now = datetime.now()
+                cooldown_sec = max(0, int(getattr(self.config, "insufficient_data_log_cooldown_sec", 900)))
+                last_log = self._insufficient_data_last_log.get(symbol)
+                if (last_log is None) or ((now - last_log).total_seconds() >= cooldown_sec):
+                    self.logger.warning(
+                        f"[{symbol}] Insufficient data: bars={len(df)} required={min_bars}"
+                    )
+                    self._insufficient_data_last_log[symbol] = now
                 return
+
+            if symbol in self._insufficient_data_last_log:
+                del self._insufficient_data_last_log[symbol]
             
             price = float(df["close"].iloc[-1])
             pos = self._ensure_position(symbol)
@@ -370,6 +508,8 @@ class StockTradingBot:
                     
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
+                    if self.retrainer:
+                        self.retrainer.record_closed_trade()
                     
                     # Send Discord notification
                     if discord:
@@ -397,16 +537,20 @@ class StockTradingBot:
                     ai_confidence = self.ai.predict_entry_probability(df)
                 
                 if signal == "BUY" and (not self.ai or ai_confidence > self.config.min_ai_confidence):
-                    qty = int(self.config.trade_amount_usd / price)
+                    stop_loss_price = sig_details.stop_loss_atr or (price * (1 - self.config.stop_loss_pct))
+                    qty, size_reason = self._size_order(symbol, price, stop_loss_price, sig_details.atr)
                     
                     # Validate trade size
                     trade_usd = qty * price
                     if not self._validate_trade_size(trade_usd):
-                        self.logger.debug(f"[{symbol}] Trade size too small: ${trade_usd:.2f}")
+                        self.logger.debug(f"[{symbol}] Trade size too small: ${trade_usd:.2f} | {size_reason}")
                         return
                     
                     if qty > 0:
-                        self.logger.info(f"[{symbol}] BUY signal | Vol:{volume_status} | ATR:{sig_details.atr:.2f} | AI:{ai_confidence:.0%}")
+                        self.logger.info(
+                            f"[{symbol}] BUY signal | Vol:{volume_status} | ATR:{sig_details.atr:.2f} | "
+                            f"AI:{ai_confidence:.0%} | Qty:{qty} | {size_reason}"
+                        )
                         success = self.place_order("buy", symbol, qty, ai_confidence)
                         if success:
                             self._log_trade(symbol, "buy", price, qty, ai_confidence)
@@ -429,6 +573,8 @@ class StockTradingBot:
         if today > self.start_date:
             self.daily_pnl = 0.0
             self.start_date = today
+
+        self.daily_pnl = self.portfolio.daily_pnl_pct()
         
         # Check limit
         max_loss = -abs(self.config.max_daily_loss_pct)  # Negative number
@@ -486,6 +632,8 @@ class StockTradingBot:
 
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
+                    if self.retrainer:
+                        self.retrainer.record_closed_trade()
 
                     if discord:
                         discord.notify_sell(symbol, pos.entry_price, price, pos.quantity, pnl_pct, reason)
@@ -518,11 +666,15 @@ class StockTradingBot:
             stats = self.ai.get_stats()
             self.logger.info(f"Session AI Stats: {stats}")
             if discord and stats.get("total_trades", 0) > 0:
+                total_trades = int(stats.get("total_trades", 0))
+                wins = int(stats.get("wins", 0))
+                win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
+                total_pnl_usd = float(stats.get("total_pnl", 0.0))
                 discord.notify_daily_summary({
-                    "trades": stats.get("total_trades", 0),
-                    "wins": stats.get("wins", 0),
-                    "win_rate": f"{stats.get('win_rate', 0):.1f}%",
-                    "pnl": f"{stats.get('total_pnl_pct', 0):+.2f}%",
+                    "trades": total_trades,
+                    "wins": wins,
+                    "win_rate": f"{win_rate:.1f}%",
+                    "pnl": f"${total_pnl_usd:+.2f}",
                 })
     
     def _log_trade(self, symbol: str, side: str, price: float, qty: int, ai_confidence: float, exit_reason: str = None, exit_price: float = None, pnl: float = None) -> None:
@@ -546,7 +698,7 @@ class StockTradingBot:
                 
                 # Calculate P&L if available
                 pnl_pct = None
-                if exit_price and side == "buy":
+                if exit_price and side == "sell" and price > 0:
                     pnl_pct = ((exit_price - price) / price) * 100
                 
                 writer.writerow([
@@ -573,7 +725,10 @@ class StockTradingBot:
         )
         if self.ai:
             stats = self.ai.get_stats()
-            self.logger.info(f"🧠 AI active | Trades: {stats.get('total_trades', 0)} | WR: {stats.get('win_rate', 0)}%")
+            total_trades = int(stats.get("total_trades", 0))
+            wins = int(stats.get("wins", 0))
+            win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
+            self.logger.info(f"🧠 AI active | Trades: {total_trades} | WR: {win_rate:.1f}%")
 
         self._wait_until_open()
         self.session_active = True
@@ -593,6 +748,8 @@ class StockTradingBot:
         
         try:
             while True:
+                self._sync_from_account()
+
                 if not self.market.is_open():
                     self.logger.info("Market closed | ending session and closing positions")
                     if self._has_open_positions():
@@ -612,10 +769,11 @@ class StockTradingBot:
                 if self.retrainer and self.ai and self.retrainer.should_retrain():
                     self.logger.info("🧠 Triggering model retraining...")
                     try:
-                        self.retrainer.retrain_model(self.ai)
-                        self.logger.info("✅ Model retraining complete")
-                        if discord:
-                            discord.notify_warning("🧠 Model retraining complete")
+                        retrained = self.retrainer.retrain_model(self.ai)
+                        if retrained:
+                            self.logger.info("✅ Model retraining complete")
+                        else:
+                            self.logger.info("🧠 Retraining skipped (not enough recent closed-trade data)")
                     except Exception as e:
                         self.logger.error(f"❌ Model retraining failed: {e}")
                         if discord:
@@ -635,11 +793,15 @@ class StockTradingBot:
                 self.logger.info(f"Final AI Stats: {stats}")
                 # 🔔 Send final summary to Discord
                 if discord and stats.get("total_trades", 0) > 0:
+                    total_trades = int(stats.get("total_trades", 0))
+                    wins = int(stats.get("wins", 0))
+                    win_rate = (wins / total_trades * 100.0) if total_trades > 0 else 0.0
+                    total_pnl_usd = float(stats.get("total_pnl", 0.0))
                     discord.notify_daily_summary({
-                        "trades": stats.get("total_trades", 0),
-                        "wins": stats.get("wins", 0),
-                        "win_rate": f"{stats.get('win_rate', 0):.1f}%",
-                        "pnl": f"{stats.get('total_pnl_pct', 0):+.2f}%",
+                        "trades": total_trades,
+                        "wins": wins,
+                        "win_rate": f"{win_rate:.1f}%",
+                        "pnl": f"${total_pnl_usd:+.2f}",
                     })
         except Exception as e:
             self.logger.error(f"Bot error: {e}")
@@ -656,9 +818,18 @@ def main() -> None:
         bot = StockTradingBot(config)
         bot.run()
     except Exception as e:
-        logging.error(f"Failed to start bot: {e}")
+        error_text = str(e)
+        logging.error(f"Failed to start bot: {error_text}")
+
+        lowered = error_text.lower()
+        is_auth_error = any(token in lowered for token in ("unauthorized", "forbidden", "401"))
+
         if discord:
-            discord.notify_error("Stock Bot startup failed!", {"Error": str(e)})
+            discord.notify_error("Stock Bot startup failed!", {"Error": error_text})
+
+        # Exit code 3 is treated as non-restartable by systemd for auth/config issues.
+        if is_auth_error:
+            sys.exit(3)
         sys.exit(1)
 
 

@@ -86,6 +86,35 @@ class StockTradingConfig(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="STOCK_LOG_LEVEL")
     log_max_mb: int = Field(default=10, ge=1, le=200, validation_alias="STOCK_LOG_MAX_MB")
     log_backup_count: int = Field(default=7, ge=1, le=30, validation_alias="STOCK_LOG_BACKUP_COUNT")
+    bars_limit: int = Field(default=250, ge=50, validation_alias="STOCK_BARS_LIMIT")
+    min_bars: int = Field(default=45, ge=20, validation_alias="STOCK_MIN_BARS")
+    insufficient_data_log_cooldown_sec: int = Field(
+        default=900,
+        ge=0,
+        validation_alias="STOCK_INSUFFICIENT_DATA_LOG_COOLDOWN",
+    )
+    account_snapshot_log_cooldown_sec: int = Field(
+        default=900,
+        ge=0,
+        validation_alias="STOCK_ACCOUNT_SNAPSHOT_LOG_COOLDOWN",
+    )
+    retrain_interval_trades: int = Field(
+        default=20,
+        ge=1,
+        validation_alias="STOCK_RETRAIN_INTERVAL_TRADES",
+    )
+    max_position_value_pct: float = Field(
+        default=0.25,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_POSITION_VALUE_PCT",
+    )
+    max_gross_exposure_pct: float = Field(
+        default=0.5,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_GROSS_EXPOSURE_PCT",
+    )
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, validation_alias="STOCK_USE_AI")

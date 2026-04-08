@@ -23,6 +23,10 @@ class Portfolio:
         self.starting_balance = starting_balance
         self.balance = starting_balance  # Cash balance (USDT)
         self.equity = starting_balance   # Total portfolio value (cash + open positions)
+        self.buying_power = starting_balance
+        self.portfolio_value = starting_balance
+        self.unrealized_plpc = 0.0
+        self.realized_plpc = 0.0
         self.positions = {}              # {symbol: {"active": bool, "entry_price": float, "size": float, "entry_time": datetime}}
         self.start_of_day_balance = starting_balance
         self.current_day = None
@@ -105,6 +109,61 @@ class Portfolio:
                 total += unrealized
         
         self.equity = total
+
+    def sync_from_account(self, account) -> None:
+        """
+        Sync portfolio cash/equity from a live broker account snapshot.
+
+        Args:
+            account: Alpaca account object or compatible snapshot
+        """
+        cash = getattr(account, "cash", None)
+        equity = getattr(account, "equity", None)
+        if equity is None:
+            equity = getattr(account, "portfolio_value", None)
+
+        if cash is None:
+            cash = getattr(account, "buying_power", None)
+
+        if cash is not None:
+            try:
+                self.balance = float(cash)
+            except (TypeError, ValueError):
+                pass
+
+        if equity is not None:
+            try:
+                self.equity = float(equity)
+            except (TypeError, ValueError):
+                pass
+
+        buying_power = getattr(account, "buying_power", None)
+        if buying_power is not None:
+            try:
+                self.buying_power = float(buying_power)
+            except (TypeError, ValueError):
+                pass
+
+        portfolio_value = getattr(account, "portfolio_value", None)
+        if portfolio_value is not None:
+            try:
+                self.portfolio_value = float(portfolio_value)
+            except (TypeError, ValueError):
+                pass
+
+        unrealized_plpc = getattr(account, "unrealized_plpc", None)
+        if unrealized_plpc is not None:
+            try:
+                self.unrealized_plpc = float(unrealized_plpc) * 100.0
+            except (TypeError, ValueError):
+                pass
+
+        realized_plpc = getattr(account, "realized_plpc", None)
+        if realized_plpc is not None:
+            try:
+                self.realized_plpc = float(realized_plpc) * 100.0
+            except (TypeError, ValueError):
+                pass
     
     def new_day(self, today: date):
         """

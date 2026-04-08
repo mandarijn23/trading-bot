@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 import stock_bot
+from portfolio import Portfolio
 
 
 class _FakeLogger:
@@ -40,6 +41,35 @@ class _FakeDiscord:
 
     def notify_daily_summary(self, *_args, **_kwargs):
         return True
+
+
+class _FakeAccount:
+    def __init__(self, cash: float = 850.0, equity: float = 1_250.0):
+        self.cash = cash
+        self.equity = equity
+        self.portfolio_value = equity
+        self.buying_power = cash
+        self.unrealized_plpc = 0.075
+        self.realized_plpc = -0.015
+
+
+class _FakeLivePosition:
+    def __init__(self, symbol: str, qty: int, avg_entry_price: float):
+        self.symbol = symbol
+        self.qty = str(qty)
+        self.avg_entry_price = str(avg_entry_price)
+
+
+class _FakeAlpacaAPI:
+    def __init__(self):
+        self._account = _FakeAccount()
+        self._positions = [_FakeLivePosition("SPY", 2, 100.0)]
+
+    def get_account(self):
+        return self._account
+
+    def list_positions(self):
+        return self._positions
 
 
 def _make_config():
@@ -84,4 +114,51 @@ def test_close_all_positions_marks_position_closed(monkeypatch):
 
     assert bot.positions["SPY"].active is False
     assert len(bot.ai.updates) == 1
+
+
+def test_sync_from_account_updates_portfolio_and_positions(monkeypatch):
+    monkeypatch.setattr(stock_bot, "setup_logging", lambda *_args, **_kwargs: _FakeLogger())
+    monkeypatch.setattr(stock_bot, "discord", _FakeDiscord())
+    monkeypatch.setattr(stock_bot, "ModelRetrainer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(stock_bot, "HAS_RETRAINER", False)
+
+    bot = stock_bot.StockTradingBot(_make_config())
+    bot.api = _FakeAlpacaAPI()
+    bot.positions = {"SPY": stock_bot.StockPosition("SPY")}
+
+    bot._sync_from_account()
+
+    assert bot.portfolio.balance == 850.0
+    assert bot.portfolio.equity == 1_250.0
+    assert bot.portfolio.buying_power == 850.0
+    assert bot.portfolio.portfolio_value == 1_250.0
+    assert bot.portfolio.unrealized_plpc == 7.5
+    assert bot.portfolio.realized_plpc == -1.5
+    assert bot.positions["SPY"].active is True
+    assert bot.positions["SPY"].quantity == 2
+    assert bot.positions["SPY"].entry_price == 100.0
+
+
+def test_size_order_respects_gross_exposure_cap(monkeypatch):
+    monkeypatch.setattr(stock_bot, "setup_logging", lambda *_args, **_kwargs: _FakeLogger())
+    monkeypatch.setattr(stock_bot, "discord", _FakeDiscord())
+    monkeypatch.setattr(stock_bot, "ModelRetrainer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(stock_bot, "HAS_RETRAINER", False)
+
+    config = _make_config()
+    config.max_gross_exposure_pct = 0.5
+    config.max_position_value_pct = 0.25
+
+    bot = stock_bot.StockTradingBot(config)
+    bot.portfolio.equity = 1_000.0
+    bot.portfolio.balance = 1_000.0
+    bot.positions = {"SPY": stock_bot.StockPosition("SPY")}
+    bot.positions["SPY"].active = True
+    bot.positions["SPY"].entry_price = 100.0
+    bot.positions["SPY"].quantity = 5
+
+    qty, reason = bot._size_order("QQQ", price=100.0, stop_loss_price=95.0, atr_value=1.5)
+
+    assert qty == 0
+    assert "Gross exposure cap reached" in reason
 
