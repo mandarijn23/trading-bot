@@ -7,9 +7,15 @@ Example: https://discordapp.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_TOKEN
 
 import os
 import json
+import mimetypes
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 import requests
+from dotenv import load_dotenv
+
+
+load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=True)
 
 
 class DiscordAlerts:
@@ -18,6 +24,7 @@ class DiscordAlerts:
     def __init__(self):
         self.webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
         self.enabled = bool(self.webhook_url)
+        self.graph_mention = os.getenv("DISCORD_HOURLY_MENTION", "@jovial_lemur_47699").strip()
         if self.enabled:
             print("✅ Discord notifications enabled")
         else:
@@ -37,7 +44,7 @@ class DiscordAlerts:
         """
         if not self.enabled:
             return False
-        
+
         try:
             embed = {
                 "title": title,
@@ -48,17 +55,69 @@ class DiscordAlerts:
                 ],
                 "timestamp": datetime.now().isoformat(),
             }
-            
+
             data = {"embeds": [embed]}
             response = requests.post(
                 self.webhook_url,
                 json=data,
-                timeout=5
+                timeout=5,
             )
-            
-            return response.status_code == 204
+
+            return response.status_code in (200, 204)
         except Exception as e:
             print(f"❌ Discord send failed: {e}")
+            return False
+
+    def send_file(
+        self,
+        title: str,
+        fields: dict,
+        file_path: str,
+        filename: Optional[str] = None,
+        color: int = 3447003,
+    ) -> bool:
+        """Send a Discord embed with an attached file."""
+        if not self.enabled:
+            return False
+
+        attachment_name = filename or Path(file_path).name
+        try:
+            embed = {
+                "title": title,
+                "color": color,
+                "fields": [
+                    {"name": k, "value": str(v), "inline": True}
+                    for k, v in fields.items()
+                ],
+                "timestamp": datetime.now().isoformat(),
+                "image": {"url": f"attachment://{attachment_name}"},
+            }
+            content = "Training chart attached below."
+            if self.graph_mention:
+                content = f"{self.graph_mention} {content}"
+
+            payload = {
+                "content": content,
+                "embeds": [embed],
+                "attachments": [{"id": 0, "filename": attachment_name}],
+                "allowed_mentions": {"parse": ["users"]},
+            }
+            mime_type, _ = mimetypes.guess_type(attachment_name)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+
+            with open(file_path, "rb") as file_handle:
+                files = {"files[0]": (attachment_name, file_handle, mime_type)}
+                response = requests.post(
+                    self.webhook_url,
+                    data={"payload_json": json.dumps(payload)},
+                    files=files,
+                    timeout=10,
+                )
+
+            return response.status_code in (200, 204)
+        except Exception as e:
+            print(f"❌ Discord file send failed: {e}")
             return False
     
     def notify_buy(self, symbol: str, price: float, qty: int, ai_confidence: float) -> bool:

@@ -554,6 +554,12 @@ def get_signal(
     **kwargs,
 ) -> Literal["BUY", "HOLD"]:
     """Return BUY/HOLD only for bot compatibility (spot long behavior)."""
+    required_cols = {"open", "high", "low", "close", "volume"}
+    missing = required_cols.difference(df.columns)
+    if missing:
+        missing_cols = ", ".join(sorted(missing))
+        raise ValueError(f"DataFrame must contain OHLCV columns. Missing: {missing_cols}")
+
     strategy = StrategyManager()
     signal_obj = strategy.get_signal(df)
     if signal_obj.signal == "BUY":

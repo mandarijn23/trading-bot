@@ -14,6 +14,7 @@ Replaces TensorFlow for better performance on small datasets + faster inference.
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -52,7 +53,7 @@ class FeatureExtractor:
         
         Returns: array of shape (1, n_features) for single prediction
         """
-        if len(df) < 50:
+        if len(df) < 20:
             return None
         
         close = df["close"].values
@@ -157,11 +158,15 @@ class TradingAI:
     
     def build_model(self):
         """Create Random Forest classifier."""
+        n_estimators = int(os.getenv("RF_N_ESTIMATORS", "100"))
+        max_depth = int(os.getenv("RF_MAX_DEPTH", "10"))
+        min_samples_split = int(os.getenv("RF_MIN_SAMPLES_SPLIT", "5"))
+        min_samples_leaf = int(os.getenv("RF_MIN_SAMPLES_LEAF", "2"))
         self.model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=5,
-            min_samples_leaf=2,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
             random_state=42,
             n_jobs=-1,
         )

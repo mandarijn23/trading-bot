@@ -1,0 +1,17 @@
+[Unit]
+Description=Trading Bot Hourly Model Training + Discord Report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nas/trading-bot
+ExecStart=/home/nas/trading-bot/hourly_train_and_report.sh /home/nas/trading-bot
+User=nas
+Group=nas
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

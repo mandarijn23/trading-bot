@@ -19,40 +19,41 @@ class TradingConfig(BaseSettings):
     model_config = ConfigDict(
         env_file=".env",
         case_sensitive=False,
-        extra="ignore"  # Ignore extra fields from .env
+        extra="ignore",  # Ignore extra fields from .env
+        populate_by_name=True,
     )
     
     # API Keys
-    binance_api_key: str = Field(..., env="BINANCE_API_KEY")
-    binance_api_secret: str = Field(..., env="BINANCE_API_SECRET")
+    binance_api_key: str = Field(..., validation_alias="BINANCE_API_KEY")
+    binance_api_secret: str = Field(..., validation_alias="BINANCE_API_SECRET")
     
     # Trading symbols
-    symbols: List[str] = Field(default=["BTC/USDT", "ETH/USDT", "SOL/USDT"], env="SYMBOLS")
-    timeframe: str = Field(default="1h", env="TIMEFRAME")
+    symbols: List[str] = Field(default=["BTC/USDT", "ETH/USDT", "SOL/USDT"], validation_alias="SYMBOLS")
+    timeframe: str = Field(default="1h", validation_alias="TIMEFRAME")
     
     # RSI Settings
-    rsi_period: int = Field(default=10, ge=2, le=200, env="RSI_PERIOD")
-    rsi_oversold: float = Field(default=35, ge=0, le=50, env="RSI_OVERSOLD")
-    rsi_overbought: float = Field(default=70, ge=50, le=100, env="RSI_OVERBOUGHT")
+    rsi_period: int = Field(default=10, ge=2, le=200, validation_alias="RSI_PERIOD")
+    rsi_oversold: float = Field(default=35, ge=0, le=50, validation_alias="RSI_OVERSOLD")
+    rsi_overbought: float = Field(default=70, ge=50, le=100, validation_alias="RSI_OVERBOUGHT")
     
     # Risk Management
-    trade_amount_usdt: float = Field(default=20.0, gt=0, env="TRADE_AMOUNT_USDT")
-    min_trade_usdt: float = Field(default=10.0, gt=0, env="MIN_TRADE_USDT")
-    trailing_stop_pct: float = Field(default=0.025, gt=0, lt=1, env="TRAILING_STOP_PCT")
-    cooldown_candles: int = Field(default=8, ge=0, env="COOLDOWN_CANDLES")
-    stop_loss_pct: float = Field(default=0.03, gt=0, lt=1, env="STOP_LOSS_PCT")
-    take_profit_pct: float = Field(default=0.08, gt=0, lt=1, env="TAKE_PROFIT_PCT")
-    max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, env="MAX_DAILY_LOSS_PCT")
-    max_open_positions: int = Field(default=2, ge=1, env="MAX_OPEN_POSITIONS")
+    trade_amount_usdt: float = Field(default=20.0, gt=0, validation_alias="TRADE_AMOUNT_USDT")
+    min_trade_usdt: float = Field(default=10.0, gt=0, validation_alias="MIN_TRADE_USDT")
+    trailing_stop_pct: float = Field(default=0.025, gt=0, lt=1, validation_alias="TRAILING_STOP_PCT")
+    cooldown_candles: int = Field(default=8, ge=0, validation_alias="COOLDOWN_CANDLES")
+    stop_loss_pct: float = Field(default=0.03, gt=0, lt=1, validation_alias="STOP_LOSS_PCT")
+    take_profit_pct: float = Field(default=0.08, gt=0, lt=1, validation_alias="TAKE_PROFIT_PCT")
+    max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, validation_alias="MAX_DAILY_LOSS_PCT")
+    max_open_positions: int = Field(default=2, ge=1, validation_alias="MAX_OPEN_POSITIONS")
     
     # Portfolio settings
-    starting_balance: float = Field(default=1000.0, gt=0, env="STARTING_BALANCE")
+    starting_balance: float = Field(default=1000.0, gt=0, validation_alias="STARTING_BALANCE")
     
     # Bot settings
-    paper_trading: bool = Field(default=True, env="PAPER_TRADING")
-    check_interval: int = Field(default=60, gt=0, env="CHECK_INTERVAL")
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    min_ai_confidence: float = Field(default=0.45, ge=0, le=1, env="MIN_AI_CONFIDENCE")
+    paper_trading: bool = Field(default=True, validation_alias="PAPER_TRADING")
+    check_interval: int = Field(default=60, gt=0, validation_alias="CHECK_INTERVAL")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    min_ai_confidence: float = Field(default=0.45, ge=0, le=1, validation_alias="MIN_AI_CONFIDENCE")
     
     @field_validator("rsi_oversold", mode="before")
     @classmethod

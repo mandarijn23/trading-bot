@@ -501,6 +501,8 @@ class TradingAI:
     def __init__(self, model_path: str = "trading_model.h5"):
         self.nn = NeuralNetwork(input_size=11, model_path=model_path)
         self.nn.load()
+        # Backward-compatible alias expected by older tests/tools.
+        self.model = self.nn.model
         self.metrics = {
             "trades": 0,
             "wins": 0,
@@ -604,8 +606,23 @@ class FeatureExtractor:
     @staticmethod
     def extract_features(df: pd.DataFrame, lookback: int = 20) -> Tuple[np.ndarray, np.ndarray]:
         """Extract features for backward compatibility."""
-        X = FeatureEngineer.create_features(df, lookback)
-        y = FeatureEngineer.create_labels(df)
+        X_full = FeatureEngineer.create_features(df, lookback)
+        if len(X_full) == 0:
+            return np.array([]), np.array([])
+
+        # Legacy API expected 6 features with RSI at index 4.
+        X = np.column_stack([
+            X_full[:, 0],   # price momentum
+            X_full[:, 1],   # price volatility
+            X_full[:, 3],   # volume ratio
+            X_full[:, 5],   # atr_pct
+            X_full[:, 9],   # normalized rsi (0-1)
+            X_full[:, 8],   # ema slope
+        ])
+
+        # Align labels to extracted windows and use a lower threshold for legacy behavior.
+        y_full = FeatureEngineer.create_labels(df, threshold_pct=0.1)
+        y = y_full[lookback:lookback + len(X)]
         return X, y
 
 

@@ -8,9 +8,12 @@ Commands:
   python cli.py reset-trades      - Clear trade history (⚠️  DANGEROUS)
   python cli.py stats             - Show AI performance stats
   python cli.py validate-config   - Verify environment setup
+    python cli.py preflight         - Run paper-trading launch checklist
+    python cli.py daily-report      - Run daily performance/decay report
 """
 
 import sys
+import os
 import json
 import click
 from pathlib import Path
@@ -277,6 +280,27 @@ def version():
     """Show version info."""
     click.echo("Trading Bot v1.0.0 (Phase 6)")
     click.echo("Features: Async Crypto + Stock Trading with AI + Discord + Retraining")
+
+
+@cli.command("preflight")
+@click.option("--mode", type=click.Choice(["auto", "crypto", "stocks"]), default="auto", show_default=True)
+def preflight(mode: str):
+    """Run paper-trading preflight checklist."""
+    code = os.system(f"python paper_launch_check.py --mode {mode}")
+    if code != 0:
+        sys.exit(1)
+
+
+@cli.command("daily-report")
+@click.option("--json-output", is_flag=True, help="Print JSON report")
+def daily_report(json_output: bool):
+    """Run daily performance and strategy-decay report."""
+    cmd = "python daily_performance_report.py"
+    if json_output:
+        cmd += " --json"
+    code = os.system(cmd)
+    if code != 0:
+        sys.exit(1)
 
 
 def main():

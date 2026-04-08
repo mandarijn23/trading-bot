@@ -1,0 +1,20 @@
+[Unit]
+Description=Trading Bot Stock Paper Session (NAS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nas/trading-bot
+ExecStart=/home/nas/trading-bot/run_stock_session.sh
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=60
+User=nas
+Group=nas
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

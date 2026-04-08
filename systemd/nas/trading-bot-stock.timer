@@ -1,0 +1,11 @@
+[Unit]
+Description=Start Trading Bot Stock Session Before US Market Open (NAS)
+
+[Timer]
+# Start well before market open so the bot can wait for the bell.
+OnCalendar=Mon..Fri 12:00:00
+Persistent=true
+Unit=trading-bot-stock.service
+
+[Install]
+WantedBy=timers.target

@@ -13,10 +13,15 @@ from typing import Dict, Literal
 from datetime import datetime
 
 import pandas as pd
-import alpaca_trade_api as tradeapi
+
+try:
+    import alpaca_trade_api as tradeapi
+except ImportError:
+    tradeapi = None
 
 from stock_config import load_stock_config
 from strategy import get_signal, get_signal_enhanced
+from market_hours import USMarketSession
 
 try:
     # Try Random Forest first (lightweight, better on small datasets)
@@ -43,8 +48,25 @@ except ImportError:
 
 
 # Configure logging
+class SafeConsoleFilter(logging.Filter):
+    """Normalize log messages for consoles that cannot encode Unicode."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            safe = msg.encode("ascii", errors="replace").decode("ascii")
+            record.msg = safe
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
+
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """Configure logging."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     logger = logging.getLogger("stock-bot")
     logger.setLevel(log_level.upper())
     
@@ -55,10 +77,12 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     
     fh = logging.FileHandler("stock_bot.log")
     fh.setFormatter(formatter)
+    fh.addFilter(SafeConsoleFilter())
     logger.addHandler(fh)
     
     ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(formatter)
+    ch.addFilter(SafeConsoleFilter())
     logger.addHandler(ch)
     
     return logger
@@ -140,10 +164,15 @@ class StockTradingBot:
         self.retrainer = ModelRetrainer(retrain_interval=20) if HAS_RETRAINER and HAS_AI else None
         self.daily_pnl = 0.0  # Track daily P&L for max loss limit
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
+        self.market = USMarketSession()
+        self.session_active = False
         
     def connect(self) -> None:
         """Connect to Alpaca."""
         try:
+            if tradeapi is None:
+                raise ImportError("alpaca_trade_api is required for live/paper trading")
+
             # Use positional arguments for Alpaca REST API (3.0+)
             self.api = tradeapi.REST(
                 key_id=self.config.alpaca_api_key,
@@ -326,6 +355,83 @@ class StockTradingBot:
             self.logger.debug(f"Trade size ${trade_amount:.2f} below minimum ${self.config.min_trade_usd:.2f}")
             return False
         return True
+
+    def _has_open_positions(self) -> bool:
+        return any(pos.active for pos in self.positions.values())
+
+    def _close_all_positions(self, reason: str = "MARKET_CLOSE") -> None:
+        """Force close all open positions when the market session ends."""
+        for symbol, pos in self.positions.items():
+            if not pos.active:
+                continue
+
+            try:
+                df = self.fetch_bars(symbol, limit=50)
+                if df.empty:
+                    price = pos.entry_price
+                    self.logger.warning(f"[{symbol}] No fresh bars at session end; using entry price")
+                else:
+                    price = float(df["close"].iloc[-1])
+
+                self.logger.info(f"[{symbol}] EXIT {reason} @ ${price:.2f}")
+                success = self.place_order("sell", symbol, pos.quantity)
+                if success:
+                    was_loss = price < pos.entry_price
+                    pnl = (price - pos.entry_price) * pos.quantity
+                    pnl_pct = (pnl / (pos.entry_price * pos.quantity)) * 100 if pos.entry_price > 0 else 0
+                    self.daily_pnl += pnl_pct
+
+                    self._log_trade(
+                        symbol,
+                        "sell",
+                        pos.entry_price,
+                        pos.quantity,
+                        pos.ai_confidence,
+                        exit_reason=reason,
+                        exit_price=price,
+                        pnl=pnl,
+                    )
+
+                    if self.ai:
+                        self.ai.update_from_trade(pnl, not was_loss)
+
+                    if discord:
+                        discord.notify_sell(symbol, pos.entry_price, price, pos.quantity, pnl_pct, reason)
+
+                    pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
+            except Exception as e:
+                self.logger.error(f"[{symbol}] Failed to close position at session end: {e}")
+
+    def _wait_until_open(self) -> None:
+        """Sleep until the next NYSE open."""
+        while not self.market.is_open():
+            seconds = self.market.seconds_until_open()
+            minutes = seconds / 60.0
+            self.logger.info(f"Market closed | opens in {minutes:.0f} minutes")
+            sleep_seconds = 300 if seconds <= 0 else max(30, min(300, int(seconds)))
+            time.sleep(sleep_seconds)
+
+    def _finalize_session(self) -> None:
+        """Run end-of-day learning and reporting."""
+        if self.retrainer and self.ai:
+            try:
+                self.logger.info("🧠 End-of-day retraining...")
+                retrained = self.retrainer.retrain_model(self.ai)
+                if retrained:
+                    self.logger.info("✅ End-of-day retraining complete")
+            except Exception as e:
+                self.logger.error(f"End-of-day retraining failed: {e}")
+
+        if self.ai:
+            stats = self.ai.get_stats()
+            self.logger.info(f"Session AI Stats: {stats}")
+            if discord and stats.get("total_trades", 0) > 0:
+                discord.notify_daily_summary({
+                    "trades": stats.get("total_trades", 0),
+                    "wins": stats.get("wins", 0),
+                    "win_rate": f"{stats.get('win_rate', 0):.1f}%",
+                    "pnl": f"{stats.get('total_pnl_pct', 0):+.2f}%",
+                })
     
     def _log_trade(self, symbol: str, side: str, price: float, qty: int, ai_confidence: float, exit_reason: str = None, exit_price: float = None, pnl: float = None) -> None:
         """Log trade to CSV for analysis."""
@@ -373,6 +479,9 @@ class StockTradingBot:
         if self.ai:
             stats = self.ai.get_stats()
             self.logger.info(f"🧠 AI active | Trades: {stats.get('total_trades', 0)} | WR: {stats.get('win_rate', 0)}%")
+
+        self._wait_until_open()
+        self.session_active = True
         
         # 🔔 Discord startup notification
         if discord:
@@ -389,6 +498,14 @@ class StockTradingBot:
         
         try:
             while True:
+                if not self.market.is_open():
+                    self.logger.info("Market closed | ending session and closing positions")
+                    if self._has_open_positions():
+                        self._close_all_positions("MARKET_CLOSE")
+                    self._finalize_session()
+                    self.session_active = False
+                    return
+
                 for symbol in self.config.symbols:
                     self.process_symbol(symbol)
                 
@@ -404,11 +521,16 @@ class StockTradingBot:
                         self.logger.error(f"❌ Model retraining failed: {e}")
                         if discord:
                             discord.notify_error(f"Model retraining failed: {e}")
+
+                if self.market.seconds_until_close() <= self.config.check_interval:
+                    self.logger.info("Market close approaching | preparing to stop at close")
                 
                 time.sleep(self.config.check_interval)
                 
         except KeyboardInterrupt:
             self.logger.info("Bot stopped by user")
+            if self._has_open_positions():
+                self._close_all_positions("MANUAL_STOP")
             if self.ai:
                 stats = self.ai.get_stats()
                 self.logger.info(f"Final AI Stats: {stats}")

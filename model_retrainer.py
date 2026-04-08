@@ -139,8 +139,8 @@ class TradeAnalytics:
         stats = {}
         for date, group in df.groupby("date"):
             trades = len(group)
-            wins = len(group[group["pnl_pct"].str.contains("^\-?[0-9]") & 
-                          (group["pnl_pct"].str.extract("([\d.]+)", expand=False).astype(float) > 0)])
+            wins = len(group[group["pnl_pct"].str.contains(r"^-?[0-9]") & 
+                          (group["pnl_pct"].str.extract(r"([\d.]+)", expand=False).astype(float) > 0)])
             
             stats[str(date)] = {
                 "trades": trades,

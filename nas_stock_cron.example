@@ -1,0 +1,4 @@
+# Run the stock session on weekdays. The bot waits for market open and exits at close.
+# Adjust /path/to/trading-bot to your NAS path.
+#
+# 25 9 * * 1-5 /path/to/trading-bot/run_stock_session.sh >> /path/to/trading-bot/stock_session.log 2>&1

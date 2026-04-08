@@ -13,7 +13,7 @@ Comes with **backtester**, paper trading mode, stop-loss / take-profit managemen
 - **Pydantic validation** — Config schema with automatic validation
 - **Environment variables** — Secure `.env` file support (no hardcoded secrets)
 - **Comprehensive logging** — File + console output with configurable levels
-- **Unit tests** — 100% test coverage for core logic (pytest)
+- **Unit tests** — Coverage for core logic modules (pytest)
 - **Better error handling** — Graceful degradation and clear error messages
 - **Multi-pair trading** — Trade BTC, ETH, SOL simultaneously (easily customizable)
 - **🤖 Machine Learning** — AI learns from trade outcomes & adapts position sizing

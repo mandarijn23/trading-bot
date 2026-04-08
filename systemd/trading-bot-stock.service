@@ -1,0 +1,23 @@
+[Unit]
+Description=Trading Bot Stock Paper Session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-bot
+ExecStart=/opt/trading-bot/run_stock_session.sh
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+# Change this to the Linux user that owns the repo on your NAS
+User=tradingbot
+Group=tradingbot
+
+# Keep logs in the journal; the bot also writes stock_bot.log locally
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

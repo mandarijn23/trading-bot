@@ -23,19 +23,21 @@ def choose_bot() -> str:
     """Let user choose bot."""
     print("""
   What do you want to trade?
-  
+
   1️⃣  📈 STOCKS (SPY, QQQ, VOO) - Paper trading, NO real money
   2️⃣  🪙 CRYPTO (BTC, ETH, SOL) - Binance (paper or live)
-  
+
   Or:
-  
+
   3️⃣  🧪 BACKTEST - Test strategy on historical data
   4️⃣  🤖 AI TOOLS - Manage AI model
   5️⃣  ⚙️  SETUP - Configure bot
+  6️⃣  ✅ PREFLIGHT - Paper-trading launch checks
+  7️⃣  📉 DAILY REPORT - Performance + decay
   """)
-    
-    choice = input("  Choose (1-5): ").strip()
-    
+
+    choice = input("  Choose (1-7): ").strip()
+
     if choice == "1":
         return "stocks"
     elif choice == "2":
@@ -46,6 +48,10 @@ def choose_bot() -> str:
         return "ai"
     elif choice == "5":
         return "setup"
+    elif choice == "6":
+        return "preflight"
+    elif choice == "7":
+        return "daily_report"
     else:
         print("  ❌ Invalid choice")
         return ""
@@ -180,6 +186,12 @@ def main() -> int:
                 return run_ai()
             elif bot_type == "setup":
                 return run_setup()
+            elif bot_type == "preflight":
+                os.system("python paper_launch_check.py --mode auto")
+                return 0
+            elif bot_type == "daily_report":
+                os.system("python daily_performance_report.py")
+                return 0
     
     except KeyboardInterrupt:
         print("\n\n  ❌ Cancelled")

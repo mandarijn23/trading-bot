@@ -13,7 +13,7 @@ import asyncio
 import logging
 import sys
 from typing import Dict, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 
 import ccxt.async_support as ccxt
@@ -27,9 +27,27 @@ from risk import RiskManager
 from discord_alerts import discord
 
 
+class SafeConsoleFilter(logging.Filter):
+    """Normalize log messages for consoles that cannot encode Unicode."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            safe = msg.encode("ascii", errors="replace").decode("ascii")
+            record.msg = safe
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
+
 # Configure logging
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """Configure logging with file and console output."""
+    if hasattr(sys.stdout, "reconfigure"):
+        # Avoid Windows console encoding failures when messages include emoji.
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     logger = logging.getLogger("trading-bot")
     logger.setLevel(log_level.upper())
     
@@ -41,11 +59,13 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     # File handler
     fh = logging.FileHandler("bot.log")
     fh.setFormatter(formatter)
+    fh.addFilter(SafeConsoleFilter())
     logger.addHandler(fh)
     
     # Console handler
     ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(formatter)
+    ch.addFilter(SafeConsoleFilter())
     logger.addHandler(ch)
     
     return logger
@@ -237,8 +257,9 @@ class AsyncTradingBot:
                 if signal == "BUY" and ai_confidence > self.config.min_ai_confidence:
                     # 🔴 RISK CHECK: Before placing any order
                     open_positions = sum(1 for p in self.positions.values() if p.active)
-                    if not self.risk.check_pre_trade(self.portfolio, open_positions):
-                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager")
+                    allowed, reason = self.risk.check_pre_trade(self.portfolio, symbol, open_positions)
+                    if not allowed:
+                        self.logger.warning(f"[{symbol}] Trade blocked by risk manager: {reason}")
                         return
                     
                     self.logger.info(f"[{symbol}] BUY signal | AI confidence: {ai_confidence:.0%}")
@@ -290,7 +311,7 @@ class AsyncTradingBot:
         try:
             while True:
                 # 📊 Update portfolio state
-                today = datetime.utcnow().date()
+                today = datetime.now(timezone.utc).date()
                 self.portfolio.new_day(today)
                 
                 # Process all symbols concurrently

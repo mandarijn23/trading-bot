@@ -109,8 +109,10 @@ class TestTradingConfig:
     
     def test_config_missing_required_fields(self):
         """Test missing required API keys."""
+        os.environ.pop("BINANCE_API_KEY", None)
+        os.environ.pop("BINANCE_API_SECRET", None)
         with pytest.raises(ValidationError):
-            TradingConfig()
+            TradingConfig(_env_file=None)
     
     def test_config_check_interval_positive(self):
         """Test check interval must be positive."""
