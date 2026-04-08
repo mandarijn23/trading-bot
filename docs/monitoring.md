@@ -41,6 +41,8 @@ Run the daily report when you want a compact operational summary.
 python cli.py daily-report
 ```
 
+The NAS daily profile job also sends a performance graph to Discord and records a local PNG in `logs/`.
+
 ## What to Watch
 
 - trade frequency
@@ -48,3 +50,4 @@ python cli.py daily-report
 - win rate over a meaningful sample size
 - profit factor
 - repeated signal filtering
+- daily profile changes and graph delivery status

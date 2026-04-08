@@ -53,3 +53,14 @@ python cli.py preflight
 3. Run `python cli.py validate-config`.
 4. Run `python cli.py preflight`.
 5. Start the launcher with `python trade.py`.
+
+## NAS Installation
+
+To enable the full NAS stack, copy the repo to `/home/nas/trading-bot` and run:
+
+```bash
+chmod +x tools/install_nas_stack.sh
+sudo tools/install_nas_stack.sh /home/nas/trading-bot
+```
+
+That installs and enables the stock session, watchdog, daily profile graph job, and hourly training timer.

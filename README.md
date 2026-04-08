@@ -33,6 +33,7 @@ The current operating mode is paper trading first. The code is structured to mak
 - `python cli.py preflight` for the paper-trading launch checklist
 - `python cli.py daily-report` for a performance and decay summary
 - `python dashboard.py` for the performance dashboard
+- `tools/install_nas_stack.sh` to install and enable the full NAS stack
 
 ## Setup
 
@@ -64,6 +65,9 @@ Use the dashboard and logs to review live behavior:
 - `bot.log` and `stock_bot.log` for execution logs
 - `logs/` for generated reports and run history
 - `cli.py stats` for model and trade analytics
+- `tools/send_performance_graph.py` for the Discord performance graph
+- `tools/rotate_stock_profile.sh` for the 2-day aggressive / 2-day normal profile cycle
+- `tools/daily_profile_graph.sh` for the daily profile rotation plus graph push
 
 ## Safety Notes
 
@@ -77,6 +81,17 @@ Use the dashboard and logs to review live behavior:
 - [Setup guide](docs/setup.md)
 - [Monitoring guide](docs/monitoring.md)
 - [Dashboard guide](docs/dashboard.md)
+
+## NAS Deployment
+
+For a complete NAS rollout, copy the repository to `/home/nas/trading-bot` and run:
+
+```bash
+chmod +x tools/install_nas_stack.sh
+sudo tools/install_nas_stack.sh /home/nas/trading-bot
+```
+
+This installs the stock session, watchdog, daily profile-graph job, and hourly training timer, then enables them with `systemd`.
 
 ## Status
 
