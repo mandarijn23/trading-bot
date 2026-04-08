@@ -9,7 +9,9 @@ Run:  python stock_bot.py
 import sys
 import logging
 import time
-from typing import Dict, Literal
+from math import log10
+from logging.handlers import RotatingFileHandler
+from typing import Dict, List, Literal
 from datetime import datetime
 
 import pandas as pd
@@ -62,12 +64,13 @@ class SafeConsoleFilter(logging.Filter):
         return True
 
 
-def setup_logging(log_level: str = "INFO") -> logging.Logger:
+def setup_logging(log_level: str = "INFO", log_max_mb: int = 10, log_backup_count: int = 7) -> logging.Logger:
     """Configure logging."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     logger = logging.getLogger("stock-bot")
+    logger.handlers.clear()
     logger.setLevel(log_level.upper())
     
     formatter = logging.Formatter(
@@ -75,7 +78,11 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     
-    fh = logging.FileHandler("stock_bot.log")
+    fh = RotatingFileHandler(
+        "stock_bot.log",
+        maxBytes=log_max_mb * 1024 * 1024,
+        backupCount=log_backup_count,
+    )
     fh.setFormatter(formatter)
     fh.addFilter(SafeConsoleFilter())
     logger.addHandler(fh)
@@ -162,7 +169,7 @@ class StockTradingBot:
     
     def __init__(self, config) -> None:
         self.config = config
-        self.logger = setup_logging(config.log_level)
+        self.logger = setup_logging(config.log_level, config.log_max_mb, config.log_backup_count)
         self.api = None
         self.positions: Dict[str, StockPosition] = {}
         self.ai = TradingAI() if HAS_AI and config.use_ai else None
@@ -171,6 +178,85 @@ class StockTradingBot:
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
         self.market = USMarketSession()
         self.session_active = False
+        self.loop_count = 0
+        self.universe_symbols = self._build_universe()
+        self.active_symbols = list(self.config.symbols)
+
+    def _build_universe(self) -> List[str]:
+        """Build a unique symbol universe while preserving order."""
+        ordered: List[str] = []
+        seen = set()
+        for symbol in list(self.config.symbols) + list(self.config.universe_symbols):
+            s = str(symbol).strip().upper()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            ordered.append(s)
+        return ordered or ["SPY", "QQQ", "VOO"]
+
+    def _ensure_position(self, symbol: str) -> StockPosition:
+        """Create a position slot if this symbol has not been seen before."""
+        if symbol not in self.positions:
+            self.positions[symbol] = StockPosition(symbol)
+        return self.positions[symbol]
+
+    def _score_symbol(self, symbol: str) -> float:
+        """Score a symbol for short-term opportunity quality."""
+        df = self.fetch_bars(symbol, limit=120)
+        if df.empty or len(df) < 60:
+            return float("-inf")
+
+        close = df["close"].astype(float)
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        volume = df["volume"].astype(float)
+
+        price = float(close.iloc[-1])
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma50 = float(close.rolling(50).mean().iloc[-1])
+        ret20 = float((close.iloc[-1] / close.iloc[-21]) - 1.0)
+        atr_pct = float((high - low).rolling(14).mean().iloc[-1] / max(price, 1e-9))
+        dollar_vol = float((close * volume).tail(20).mean())
+
+        if dollar_vol < self.config.min_dollar_volume:
+            return float("-inf")
+        if atr_pct < self.config.min_atr_pct or atr_pct > self.config.max_atr_pct:
+            return float("-inf")
+
+        trend_bonus = 0.02 if (price > ma20 > ma50) else -0.02
+        liquidity_bonus = min(0.05, max(0.0, (log10(max(dollar_vol, 1.0)) - 6.0) * 0.01))
+        volatility_bonus = max(0.0, 0.02 - abs(atr_pct - 0.015))
+        return ret20 + trend_bonus + liquidity_bonus + volatility_bonus
+
+    def _refresh_active_symbols(self) -> None:
+        """Pick top-ranked symbols from the configured universe."""
+        if not self.config.dynamic_symbol_selection:
+            self.active_symbols = list(self.config.symbols)
+            return
+
+        ranked = []
+        for symbol in self.universe_symbols:
+            score = self._score_symbol(symbol)
+            if score == float("-inf"):
+                continue
+            ranked.append((score, symbol))
+
+        ranked.sort(reverse=True)
+        keep = max(1, min(self.config.dynamic_symbol_count, len(self.universe_symbols)))
+        selected = [symbol for _, symbol in ranked[:keep]]
+
+        if not selected:
+            selected = list(self.config.symbols)
+
+        changed = selected != self.active_symbols
+        self.active_symbols = selected
+        for s in self.active_symbols:
+            self._ensure_position(s)
+
+        if changed:
+            self.logger.info(
+                f"Dynamic selection updated | Active symbols: {', '.join(self.active_symbols)}"
+            )
         
     def connect(self) -> None:
         """Connect to Alpaca."""
@@ -194,7 +280,8 @@ class StockTradingBot:
                 self.logger.warning("⚠️  Connected to Alpaca (LIVE TRADING)")
             
             # Initialize positions
-            self.positions = {s: StockPosition(s) for s in self.config.symbols}
+            self.positions = {s: StockPosition(s) for s in self.universe_symbols}
+            self._refresh_active_symbols()
             
         except Exception as e:
             self.logger.error(f"Failed to connect: {e}")
@@ -264,7 +351,7 @@ class StockTradingBot:
                 return
             
             price = float(df["close"].iloc[-1])
-            pos = self.positions[symbol]
+            pos = self._ensure_position(symbol)
             pos.tick_cooldown()
 
             # Check for exit
@@ -480,7 +567,10 @@ class StockTradingBot:
     def run(self) -> None:
         """Main trading loop."""
         self.connect()
-        self.logger.info(f"🤖 Stock Bot started | Symbols: {self.config.symbols} | {self.config.timeframe}")
+        self.logger.info(
+            f"🤖 Stock Bot started | Universe: {len(self.universe_symbols)} | "
+            f"Active: {self.active_symbols} | {self.config.timeframe}"
+        )
         if self.ai:
             stats = self.ai.get_stats()
             self.logger.info(f"🧠 AI active | Trades: {stats.get('total_trades', 0)} | WR: {stats.get('win_rate', 0)}%")
@@ -493,7 +583,7 @@ class StockTradingBot:
             discord.send_message(
                 "🚀 Stock Bot Started",
                 {
-                    "Symbols": ", ".join(self.config.symbols),
+                    "Symbols": ", ".join(self.active_symbols),
                     "Timeframe": self.config.timeframe,
                     "Mode": "PAPER TRADING" if self.config.paper_trading else "LIVE TRADING ⚠️",
                     "Status": "Ready",
@@ -511,7 +601,11 @@ class StockTradingBot:
                     self.session_active = False
                     return
 
-                for symbol in self.config.symbols:
+                self.loop_count += 1
+                if self.loop_count == 1 or self.loop_count % self.config.selection_refresh_cycles == 0:
+                    self._refresh_active_symbols()
+
+                for symbol in self.active_symbols:
                     self.process_symbol(symbol)
                 
                 # Check if model retraining is needed

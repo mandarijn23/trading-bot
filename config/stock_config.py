@@ -43,6 +43,22 @@ class StockTradingConfig(BaseSettings):
         default=["SPY", "QQQ", "VOO"],
         validation_alias="STOCK_SYMBOLS"
     )
+
+    # Optional broader universe used for dynamic symbol selection.
+    universe_symbols: Annotated[List[str], NoDecode] = Field(
+        default=[],
+        validation_alias="STOCK_UNIVERSE_SYMBOLS"
+    )
+
+    # Dynamic symbol selection controls.
+    dynamic_symbol_selection: bool = Field(default=False, validation_alias="STOCK_DYNAMIC_SELECTION")
+    dynamic_symbol_count: int = Field(default=3, ge=1, le=30, validation_alias="STOCK_DYNAMIC_SYMBOL_COUNT")
+    selection_refresh_cycles: int = Field(default=15, ge=1, le=300, validation_alias="STOCK_SELECTION_REFRESH_CYCLES")
+
+    # Liquidity and volatility filters for dynamic selection.
+    min_dollar_volume: float = Field(default=2_000_000.0, ge=0, validation_alias="STOCK_MIN_DOLLAR_VOLUME")
+    min_atr_pct: float = Field(default=0.003, ge=0, le=1, validation_alias="STOCK_MIN_ATR_PCT")
+    max_atr_pct: float = Field(default=0.08, ge=0, le=1, validation_alias="STOCK_MAX_ATR_PCT")
     
     # Timeframe for analysis (1min, 5min, 15min, 1h, 1d)
     timeframe: str = Field(default="15Min", validation_alias="STOCK_TIMEFRAME")
@@ -68,6 +84,8 @@ class StockTradingConfig(BaseSettings):
     # Bot settings
     check_interval: int = Field(default=60, gt=0, validation_alias="STOCK_CHECK_INTERVAL")
     log_level: str = Field(default="INFO", validation_alias="STOCK_LOG_LEVEL")
+    log_max_mb: int = Field(default=10, ge=1, le=200, validation_alias="STOCK_LOG_MAX_MB")
+    log_backup_count: int = Field(default=7, ge=1, le=30, validation_alias="STOCK_LOG_BACKUP_COUNT")
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, validation_alias="STOCK_USE_AI")
@@ -90,8 +108,21 @@ class StockTradingConfig(BaseSettings):
                 except Exception:
                     pass
 
-            return [s.strip() for s in text.split(",") if s.strip()]
+                # Also support loose bracket form like [SPY,QQQ,VOO].
+                text = text.strip("[]")
+
+            parsed = []
+            for s in text.split(","):
+                clean = s.strip().strip('"').strip("'")
+                if clean:
+                    parsed.append(clean)
+            return parsed
         return v
+
+    @field_validator("universe_symbols", mode="before")
+    @classmethod
+    def parse_universe_symbols(cls, v):
+        return cls.parse_symbols(v)
 
 
 def load_stock_config() -> StockTradingConfig:
