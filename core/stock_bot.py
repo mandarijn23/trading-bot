@@ -105,6 +105,7 @@ class StockPosition:
 
     def open(self, price: float, quantity: int, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5, atr_stop: float = None) -> None:
         """Open position. Use ATR stop if provided, otherwise fixed %."""
+        logger.info(f"[{self.symbol}] OPEN position: ${price:.2f} x {quantity} | Stop: ${self.trailing_stop:.2f} | TP: ${self.take_profit:.2f} | AI: {ai_confidence:.0%}")
         self.active = True
         self.entry_price = price
         self.peak_price = price
@@ -122,6 +123,8 @@ class StockPosition:
 
     def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
         """Check if should exit."""
+        if self.active:
+            logger.debug(f"[{self.symbol}] Price: ${price:.2f} Trail: ${self.trailing_stop:.2f} TP: ${self.take_profit:.2f}")
         if not self.active:
             return "HOLD"
         
@@ -131,8 +134,10 @@ class StockPosition:
         
         if price <= self.trailing_stop:
             return "TRAIL_STOP"
+            logger.info(f"[{self.symbol}] EXIT TRAIL_STOP @ ${price:.2f} (Entry: ${self.entry_price:.2f}, Loss: {(price/self.entry_price - 1)*100:.1f}%)")
         if price >= self.take_profit:
             return "TAKE_PROFIT"
+            logger.info(f"[{self.symbol}] EXIT TAKE_PROFIT @ ${price:.2f} (Entry: ${self.entry_price:.2f}, Gain: {(price/self.entry_price - 1)*100:.1f}%)")
         
         return "HOLD"
 
