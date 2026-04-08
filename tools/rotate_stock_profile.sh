@@ -6,6 +6,7 @@ ACTION="${2:-apply}"
 ENV_FILE="$APP_DIR/.env"
 STATE_FILE="$APP_DIR/logs/profile_cycle_state.env"
 SERVICE_NAME="trading-bot-stock.service"
+RESTART_ON_APPLY="${ROTATE_PROFILE_RESTART_SERVICE:-0}"
 
 if [[ "$APP_DIR" == "--help" || "$APP_DIR" == "-h" ]]; then
   ACTION="help"
@@ -30,7 +31,7 @@ Cycle behavior:
 Notes:
   - Script stores cycle state in: logs/profile_cycle_state.env
   - It only advances once per calendar day.
-  - It restarts trading-bot-stock.service after apply if systemd is available.
+  - Restart behavior is optional. Set ROTATE_PROFILE_RESTART_SERVICE=1 to enable.
 EOF
 }
 
@@ -108,14 +109,29 @@ apply_profile_values() {
 }
 
 restart_service_if_available() {
+  if [[ "$RESTART_ON_APPLY" != "1" ]]; then
+    echo "[INFO] Skipping service restart (ROTATE_PROFILE_RESTART_SERVICE=$RESTART_ON_APPLY)"
+    return
+  fi
+
   if command -v systemctl >/dev/null 2>&1; then
     if systemctl list-unit-files | grep -q "^${SERVICE_NAME}"; then
-      echo "[INFO] Restarting ${SERVICE_NAME} to apply new profile"
-      sudo systemctl restart "$SERVICE_NAME"
+      if systemctl restart "$SERVICE_NAME" 2>/dev/null; then
+        echo "[INFO] Restarted ${SERVICE_NAME}"
+        return
+      fi
+
+      if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        echo "[INFO] Restarting ${SERVICE_NAME} via sudo"
+        sudo -n systemctl restart "$SERVICE_NAME"
+        return
+      fi
+
+      echo "[WARN] Could not restart ${SERVICE_NAME} non-interactively; restart manually if needed"
       return
     fi
   fi
-  echo "[WARN] systemd service ${SERVICE_NAME} not found; restart manually if needed"
+  echo "[WARN] systemd service ${SERVICE_NAME} not found"
 }
 
 load_state() {
