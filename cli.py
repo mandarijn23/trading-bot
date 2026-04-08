@@ -19,6 +19,12 @@ import click
 from pathlib import Path
 from datetime import datetime
 
+ROOT_DIR = Path(__file__).resolve().parent
+for rel in ("core", "models", "strategies", "utils", "config"):
+    p = str(ROOT_DIR / rel)
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 from stock_config import load_stock_config
 from discord_alerts import discord
 from model_retrainer import ModelRetrainer, TradeAnalytics
@@ -234,8 +240,7 @@ def validate_config():
 
 @cli.command()
 @click.confirmation_option(
-    prompt="🚨 This will DELETE all trade history. Continue?",
-    abort=True
+    prompt="🚨 This will DELETE all trade history. Continue?"
 )
 def reset_trades():
     """Reset trade history (WARNING: Destructive)."""

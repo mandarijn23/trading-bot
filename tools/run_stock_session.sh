@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$APP_DIR"
 
 LOCK_FILE="/tmp/trading-bot-stock.lock"
 exec 9>"$LOCK_FILE"
@@ -12,4 +14,10 @@ if [ -f ".venv/bin/activate" ]; then
   source ".venv/bin/activate"
 fi
 
-exec "$(pwd)/.venv/bin/python" stock_bot.py
+PYTHON_BIN="$(pwd)/.venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python"
+fi
+
+export PYTHONPATH="core:models:strategies:utils:config:${PYTHONPATH:-}"
+exec "$PYTHON_BIN" core/stock_bot.py

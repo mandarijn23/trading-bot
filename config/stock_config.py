@@ -6,11 +6,13 @@ Get API keys: https://app.alpaca.markets
 """
 
 import os
+import json
 from typing import List
+from typing import Annotated
 from dotenv import load_dotenv
 from pydantic import Field, ConfigDict
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, NoDecode
 
 
 load_dotenv()
@@ -37,7 +39,7 @@ class StockTradingConfig(BaseSettings):
     )
     
     # Trading symbols (stocks/ETFs)
-    symbols: List[str] = Field(
+    symbols: Annotated[List[str], NoDecode] = Field(
         default=["SPY", "QQQ", "VOO"],
         validation_alias="STOCK_SYMBOLS"
     )
@@ -75,7 +77,20 @@ class StockTradingConfig(BaseSettings):
     @classmethod
     def parse_symbols(cls, v):
         if isinstance(v, str):
-            return [s.strip() for s in v.split(",") if s.strip()]
+            text = v.strip()
+            if not text:
+                return ["SPY", "QQQ", "VOO"]
+
+            # Accept JSON arrays and comma-separated values.
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        return [str(s).strip() for s in parsed if str(s).strip()]
+                except Exception:
+                    pass
+
+            return [s.strip() for s in text.split(",") if s.strip()]
         return v
 
 

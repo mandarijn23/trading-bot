@@ -69,7 +69,7 @@ def run_stocks() -> int:
         print("  Run: python setup_stocks.py")
         return 1
     
-    os.system("python stock_bot.py")
+    os.system("PYTHONPATH=core:models:strategies:utils:config python core/stock_bot.py")
     return 0
 
 
@@ -85,7 +85,7 @@ def run_crypto() -> int:
         print("  Add keys to .env and try again")
         return 1
     
-    os.system("python bot.py")
+    os.system("PYTHONPATH=core:models:strategies:utils:config python core/bot.py")
     return 0
 
 

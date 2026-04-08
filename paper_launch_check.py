@@ -25,6 +25,13 @@ import numpy as np
 import pandas as pd
 
 
+ROOT_DIR = Path(__file__).resolve().parent
+for rel in ("core", "models", "strategies", "utils", "config"):
+    p = str(ROOT_DIR / rel)
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -71,8 +78,9 @@ def check_dependencies(mode: str) -> CheckResult:
 
 
 def check_files(mode: str) -> CheckResult:
-    files = ["strategy.py", "risk.py", "portfolio.py"]
-    files.append("bot.py" if mode == "crypto" else "stock_bot.py")
+    files = ["strategies/strategy.py", "utils/risk.py", "utils/portfolio.py"]
+    files.append("core/bot.py" if mode == "crypto" else "core/stock_bot.py")
+    files.append("config/stock_config.py" if mode == "stocks" else "config.py")
     missing = [f for f in files if not Path(f).exists()]
     if missing:
         return CheckResult("Required files", False, f"Missing: {', '.join(missing)}")

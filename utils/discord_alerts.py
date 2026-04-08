@@ -15,7 +15,11 @@ import requests
 from dotenv import load_dotenv
 
 
-load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=True)
+ROOT_ENV = Path(__file__).resolve().parents[1] / ".env"
+if ROOT_ENV.exists():
+    load_dotenv(dotenv_path=ROOT_ENV, override=False)
+else:
+    load_dotenv(override=False)
 
 
 class DiscordAlerts:
