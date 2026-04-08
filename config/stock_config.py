@@ -77,6 +77,12 @@ class StockTradingConfig(BaseSettings):
     cooldown_candles: int = Field(default=4, ge=0, validation_alias="STOCK_COOLDOWN")
     max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, validation_alias="STOCK_MAX_DAILY_LOSS")
     max_open_positions: int = Field(default=2, ge=1, validation_alias="STOCK_MAX_OPEN_POS")
+    max_risk_per_trade: float = Field(default=0.02, gt=0, lt=0.2, validation_alias="STOCK_MAX_RISK_PER_TRADE")
+    profit_optimized_sizing: bool = Field(default=True, validation_alias="STOCK_PROFIT_OPTIMIZED_SIZING")
+    min_conviction_risk_mult: float = Field(default=0.75, gt=0, le=1, validation_alias="STOCK_MIN_CONVICTION_RISK_MULT")
+    max_conviction_risk_mult: float = Field(default=1.75, ge=1, le=3, validation_alias="STOCK_MAX_CONVICTION_RISK_MULT")
+    high_confidence_threshold: float = Field(default=0.65, ge=0, le=1, validation_alias="STOCK_HIGH_CONFIDENCE_THRESHOLD")
+    very_high_confidence_threshold: float = Field(default=0.75, ge=0, le=1, validation_alias="STOCK_VERY_HIGH_CONFIDENCE_THRESHOLD")
     
     # Paper vs Live trading
     paper_trading: bool = Field(default=True, validation_alias="STOCK_PAPER_TRADING")

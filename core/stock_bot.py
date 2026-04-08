@@ -114,7 +114,6 @@ class StockPosition:
 
     def open(self, price: float, quantity: int, stop_loss_pct: float, take_profit_pct: float, ai_confidence: float = 0.5, atr_stop: float = None) -> None:
         """Open position. Use ATR stop if provided, otherwise fixed %."""
-        logger.info(f"[{self.symbol}] OPEN position: ${price:.2f} x {quantity} | Stop: ${self.trailing_stop:.2f} | TP: ${self.take_profit:.2f} | AI: {ai_confidence:.0%}")
         self.active = True
         self.entry_price = price
         self.peak_price = price
@@ -129,6 +128,10 @@ class StockPosition:
         self.take_profit = price * (1 + take_profit_pct)
         self.entry_time = datetime.now()
         self.ai_confidence = ai_confidence
+        logging.getLogger("stock-bot").info(
+            f"[{self.symbol}] OPEN position: ${price:.2f} x {quantity} | "
+            f"Stop: ${self.trailing_stop:.2f} | TP: ${self.take_profit:.2f} | AI: {ai_confidence:.0%}"
+        )
 
     def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
         """Check if should exit."""
@@ -351,7 +354,15 @@ class StockTradingBot:
         self.logger.info("Alpaca snapshot | " + " | ".join(parts))
         self._account_snapshot_last_log = now
 
-    def _size_order(self, symbol: str, price: float, stop_loss_price: float, atr_value: float) -> tuple[int, str]:
+    def _size_order(
+        self,
+        symbol: str,
+        price: float,
+        stop_loss_price: float,
+        atr_value: float,
+        conviction_multiplier: float = 1.0,
+        conviction_reason: str = "neutral",
+    ) -> tuple[int, str]:
         """Size an order from live equity and stop distance."""
         position_size = self.risk.calculate_position_size(
             self.portfolio,
@@ -359,6 +370,7 @@ class StockTradingBot:
             stop_loss_price=stop_loss_price,
             symbol=symbol,
             atr_value=atr_value,
+            conviction_multiplier=conviction_multiplier,
         )
 
         qty = int(position_size.shares)
@@ -381,7 +393,50 @@ class StockTradingBot:
         if qty < int(position_size.shares):
             reason = f"{reason} | exposure cap ${exposure_budget:.2f} left"
 
+        reason = f"{reason} | conviction {conviction_multiplier:.2f} ({conviction_reason})"
         return qty, reason
+
+    def _compute_conviction_multiplier(
+        self,
+        df: pd.DataFrame,
+        price: float,
+        ai_confidence: float,
+        volume_confirm: bool,
+    ) -> tuple[float, str]:
+        """Higher-conviction setups are allowed to risk more capital."""
+        if not getattr(self.config, "profit_optimized_sizing", True):
+            return 1.0, "disabled"
+
+        min_mult = float(getattr(self.config, "min_conviction_risk_mult", 0.75))
+        max_mult = float(getattr(self.config, "max_conviction_risk_mult", 1.75))
+        high_conf = float(getattr(self.config, "high_confidence_threshold", 0.65))
+        very_high_conf = float(getattr(self.config, "very_high_confidence_threshold", 0.75))
+
+        score = 1.0
+        reasons: list[str] = []
+
+        if ai_confidence >= very_high_conf:
+            score += 0.35
+            reasons.append("very_high_ai")
+        elif ai_confidence >= high_conf:
+            score += 0.20
+            reasons.append("high_ai")
+        elif ai_confidence >= self.config.min_ai_confidence:
+            score += 0.05
+            reasons.append("ok_ai")
+
+        if volume_confirm:
+            score += 0.10
+            reasons.append("volume")
+
+        ma20 = float(df["close"].rolling(20).mean().iloc[-1]) if len(df) >= 20 else price
+        ma50 = float(df["close"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else ma20
+        if price > ma20 > ma50:
+            score += 0.10
+            reasons.append("trend")
+
+        score = max(min_mult, min(max_mult, score))
+        return score, "+".join(reasons) if reasons else "neutral"
         
     def connect(self) -> None:
         """Connect to Alpaca."""
@@ -538,7 +593,20 @@ class StockTradingBot:
                 
                 if signal == "BUY" and (not self.ai or ai_confidence > self.config.min_ai_confidence):
                     stop_loss_price = sig_details.stop_loss_atr or (price * (1 - self.config.stop_loss_pct))
-                    qty, size_reason = self._size_order(symbol, price, stop_loss_price, sig_details.atr)
+                    conviction_multiplier, conviction_reason = self._compute_conviction_multiplier(
+                        df,
+                        price,
+                        ai_confidence,
+                        sig_details.volume_confirm,
+                    )
+                    qty, size_reason = self._size_order(
+                        symbol,
+                        price,
+                        stop_loss_price,
+                        sig_details.atr,
+                        conviction_multiplier=conviction_multiplier,
+                        conviction_reason=conviction_reason,
+                    )
                     
                     # Validate trade size
                     trade_usd = qty * price

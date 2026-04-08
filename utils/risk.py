@@ -196,6 +196,7 @@ class RiskManager:
         stop_loss_price: float,
         symbol: str = "",
         atr_value: float = 0.0,
+        conviction_multiplier: float = 1.0,
     ) -> PositionSize:
         """
         Calculate safe position size based on risk management rules.
@@ -214,8 +215,12 @@ class RiskManager:
         Returns:
             PositionSize object
         """
-        # Risk per trade: 2% of equity (professional standard)
-        risk_pct = getattr(self.config, 'max_risk_per_trade', 0.02)
+        # Risk per trade starts from configured baseline and can be conviction-scaled.
+        base_risk_pct = getattr(self.config, 'max_risk_per_trade', 0.02)
+        min_mult = getattr(self.config, 'min_conviction_risk_mult', 0.75)
+        max_mult = getattr(self.config, 'max_conviction_risk_mult', 1.75)
+        applied_mult = max(min_mult, min(max_mult, float(conviction_multiplier)))
+        risk_pct = base_risk_pct * applied_mult
         risk_amount = portfolio.equity * risk_pct
         
         # Distance to stop loss
@@ -242,7 +247,10 @@ class RiskManager:
             reason = f"Limited to {max_position_pct*100:.0f}% equity max"
             position_size = max_position
         else:
-            reason = f"2% risk ({risk_pct*100:.0f}% of equity)"
+            reason = (
+                f"Risk {risk_pct*100:.2f}% of equity "
+                f"(base {base_risk_pct*100:.2f}% x {applied_mult:.2f})"
+            )
         
         # Don't trade less than minimum
         min_notional = getattr(self.config, 'min_trade_usdt', 10)

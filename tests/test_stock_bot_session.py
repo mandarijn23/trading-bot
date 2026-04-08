@@ -75,10 +75,19 @@ class _FakeAlpacaAPI:
 def _make_config():
     return SimpleNamespace(
         log_level="INFO",
+        log_max_mb=10,
+        log_backup_count=7,
         alpaca_api_key="key",
         alpaca_api_secret="secret",
         alpaca_base_url="https://paper-api.alpaca.markets",
         symbols=["SPY"],
+        universe_symbols=["SPY"],
+        dynamic_symbol_selection=False,
+        dynamic_symbol_count=1,
+        selection_refresh_cycles=5,
+        min_dollar_volume=0.0,
+        min_atr_pct=0.0,
+        max_atr_pct=1.0,
         timeframe="15Min",
         use_ai=False,
         paper_trading=True,
@@ -91,6 +100,13 @@ def _make_config():
         check_interval=1,
         max_daily_loss_pct=0.05,
         max_open_positions=2,
+        min_ai_confidence=0.45,
+        max_risk_per_trade=0.02,
+        min_conviction_risk_mult=0.75,
+        max_conviction_risk_mult=1.75,
+        high_confidence_threshold=0.65,
+        very_high_confidence_threshold=0.75,
+        profit_optimized_sizing=True,
     )
 
 
