@@ -4,23 +4,57 @@
 import paramiko
 import json
 import os
+import tempfile
+from pathlib import Path
 
-host = "192.168.1.70"
-user = "nas"
+host = os.getenv("NAS_HOST", "192.168.1.70")
+user = os.getenv("NAS_USER", "nas")
 password = os.getenv("NAS_SSH_PASSWORD", "")
+
+
+def _normalize_fingerprint(value: str) -> str:
+    return value.replace(":", "").strip().lower()
+
+
+def _connect_ssh(password: str) -> paramiko.SSHClient:
+    ssh = paramiko.SSHClient()
+    ssh.load_system_host_keys()
+    ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+    ssh.connect(
+        host,
+        username=user,
+        password=password,
+        timeout=30,
+        banner_timeout=30,
+        auth_timeout=30,
+        look_for_keys=False,
+        allow_agent=False,
+    )
+
+    expected_fp = os.getenv("NAS_HOST_FINGERPRINT", "").strip()
+    if expected_fp:
+        remote_key = ssh.get_transport().get_remote_server_key()
+        actual_fp = remote_key.get_fingerprint().hex()
+        if _normalize_fingerprint(actual_fp) != _normalize_fingerprint(expected_fp):
+            ssh.close()
+            raise RuntimeError(
+                f"SSH host fingerprint mismatch for {host}. Expected {expected_fp}, got {actual_fp}."
+            )
+
+    return ssh
 
 if not password:
     raise SystemExit("Set NAS_SSH_PASSWORD in environment before running.")
 
 print("[*] Connecting to NAS...")
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(host, username=user, password=password, timeout=30)
+ssh = _connect_ssh(password)
 
 print("[*] Fetching training_report.json...")
 sftp = ssh.open_sftp()
+tmp_dir = Path(tempfile.gettempdir())
+local_report = tmp_dir / "training_report.json"
 try:
-    sftp.get("/home/nas/trading-bot/training_report.json", "/tmp/report.json")
+    sftp.get("/home/nas/trading-bot/training_report.json", str(local_report))
 except Exception as e:
     print(f"[!] Error: {e}")
     sftp.close()
@@ -29,7 +63,7 @@ except Exception as e:
 
 sftp.close()
 
-with open("/tmp/report.json") as f:
+with local_report.open(encoding="utf-8") as f:
     report = json.load(f)
 
 ssh.close()

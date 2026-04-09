@@ -9,6 +9,7 @@ Run: python setup_stocks.py
 
 import os
 import sys
+import subprocess
 from pathlib import Path
 
 
@@ -135,7 +136,12 @@ def install_dependencies() -> None:
     print_step(4, "Install Dependencies")
     
     print("  Installing alpaca-trade-api...")
-    os.system("pip install alpaca-trade-api>=3.0.0 -q")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "alpaca-trade-api>=3.0.0", "-q"],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Dependency installation failed")
     
     print("  ✅ Dependencies installed!")
 

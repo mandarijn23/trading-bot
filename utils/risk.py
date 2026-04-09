@@ -246,6 +246,25 @@ class RiskManager:
         Returns:
             PositionSize object
         """
+        if entry_price <= 0:
+            return PositionSize(
+                shares=0.0,
+                risk_amount=0.0,
+                entry_price=entry_price,
+                stop_loss=stop_loss_price,
+                reason="Entry price must be positive",
+            )
+
+        # Current bot flow is long-only; reject inverted stops explicitly.
+        if stop_loss_price >= entry_price:
+            return PositionSize(
+                shares=0.0,
+                risk_amount=0.0,
+                entry_price=entry_price,
+                stop_loss=stop_loss_price,
+                reason="Stop loss must be below entry price for long positions",
+            )
+
         # Risk per trade starts from configured baseline and can be conviction-scaled.
         base_risk_pct = getattr(self.config, 'max_risk_per_trade', 0.02)
         min_mult = getattr(self.config, 'min_conviction_risk_mult', 0.75)

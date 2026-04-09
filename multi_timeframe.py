@@ -14,6 +14,7 @@ Example:
 """
 
 from typing import Dict, List, Literal, NamedTuple
+import re
 import pandas as pd
 from indicators import Indicators, MarketRegime
 
@@ -47,6 +48,19 @@ class MultiTimeframeAnalyzer:
         self.data: Dict[str, pd.DataFrame] = {}
         self.signals: Dict[str, TimeframeSignal] = {}
         self.delay_bars = delay_bars  # ✅ ANTI-LOOKAHEAD BIAS
+
+    @staticmethod
+    def _timeframe_to_minutes(timeframe: str) -> int:
+        """Convert timeframe strings like 5m/1h/1d to minutes for robust ordering."""
+        tf = str(timeframe).strip().lower()
+        match = re.fullmatch(r"(\d+)([mhdw])", tf)
+        if not match:
+            return -1
+
+        value = int(match.group(1))
+        unit = match.group(2)
+        factors = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+        return value * factors[unit]
     
     def add_timeframe_data(self, timeframe: str, df: pd.DataFrame) -> None:
         """
@@ -165,9 +179,12 @@ class MultiTimeframeAnalyzer:
         if not self.signals:
             return "HOLD"
         
-        # Get signals sorted by timeframe (longest first)
-        tf_order = ["4h", "1d", "1h", "15m", "5m"]
-        active_signals = [(tf, self.signals.get(tf)) for tf in tf_order if tf in self.signals]
+        # Sort by actual duration (longest timeframe first).
+        active_signals = sorted(
+            ((tf, signal) for tf, signal in self.signals.items() if signal is not None),
+            key=lambda item: self._timeframe_to_minutes(item[0]),
+            reverse=True,
+        )
         
         if not active_signals:
             return "HOLD"
@@ -265,11 +282,13 @@ class TimeframeFilter:
         if not analyzer.signals:
             return True  # No data, allow trade
         
-        # Check highest timeframe trend
-        first_tf_signal = next(
-            (sig for tf in ["4h", "1d", "1h"] if (sig := analyzer.signals.get(tf))),
-            None
+        # Check highest available timeframe trend by duration, not hardcoded order.
+        ordered = sorted(
+            ((tf, sig) for tf, sig in analyzer.signals.items() if sig is not None),
+            key=lambda item: MultiTimeframeAnalyzer._timeframe_to_minutes(item[0]),
+            reverse=True,
         )
+        first_tf_signal = ordered[0][1] if ordered else None
         
         if not first_tf_signal:
             return True

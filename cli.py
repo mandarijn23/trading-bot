@@ -15,6 +15,7 @@ Commands:
 import sys
 import os
 import json
+import subprocess
 import click
 from pathlib import Path
 from datetime import datetime
@@ -347,8 +348,11 @@ def version():
 @click.option("--mode", type=click.Choice(["auto", "crypto", "stocks"]), default="auto", show_default=True)
 def preflight(mode: str):
     """Run paper-trading preflight checklist."""
-    code = os.system(f'"{sys.executable}" paper_launch_check.py --mode {mode}')
-    if code != 0:
+    result = subprocess.run(
+        [sys.executable, "paper_launch_check.py", "--mode", mode],
+        check=False,
+    )
+    if result.returncode != 0:
         sys.exit(1)
 
 
@@ -356,11 +360,11 @@ def preflight(mode: str):
 @click.option("--json-output", is_flag=True, help="Print JSON report")
 def daily_report(json_output: bool):
     """Run daily performance and strategy-decay report."""
-    cmd = f'"{sys.executable}" daily_performance_report.py'
+    cmd = [sys.executable, "daily_performance_report.py"]
     if json_output:
-        cmd += " --json"
-    code = os.system(cmd)
-    if code != 0:
+        cmd.append("--json")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
         sys.exit(1)
 
 

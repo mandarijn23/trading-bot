@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+from pickle import UnpicklingError
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,11 +59,32 @@ class SymbolTrainingResult:
     live_probability: float
 
 
-HISTORY_JSONL = Path("training_history.jsonl")
-SAMPLES_CACHE = Path("samples_cache.pkl")
-BOOTSTRAP_ITERATIONS = 100
-CACHE_MAX_SAMPLES_PER_SYMBOL = 6000
-CACHE_RECENT_EXCLUDE = 24
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HISTORY_JSONL = Path(os.getenv("STOCK_TRAINING_HISTORY_PATH", str(PROJECT_ROOT / "training_history.jsonl")))
+SAMPLES_CACHE = Path(os.getenv("STOCK_SAMPLES_CACHE_PATH", str(PROJECT_ROOT / "samples_cache.pkl")))
+BOOTSTRAP_ITERATIONS = int(os.getenv("STOCK_BOOTSTRAP_ITERATIONS", "100"))
+CACHE_MAX_SAMPLES_PER_SYMBOL = int(os.getenv("STOCK_CACHE_MAX_SAMPLES_PER_SYMBOL", "6000"))
+CACHE_RECENT_EXCLUDE = int(os.getenv("STOCK_CACHE_RECENT_EXCLUDE", "24"))
+MAX_TRAIN_TEST_OVERLAP_RATIO = float(os.getenv("STOCK_MAX_TRAIN_TEST_OVERLAP", "0.0"))
+
+
+def _validate_cache_structure(payload: object) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Validate loaded pickle structure before trusting cache contents."""
+    if not isinstance(payload, dict):
+        raise ValueError("samples cache must be a dict")
+
+    validated: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for symbol, value in payload.items():
+        if not isinstance(symbol, str):
+            raise ValueError("cache symbol keys must be strings")
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError(f"cache entry for {symbol} must be tuple(X, y)")
+        X, y = value
+        if not isinstance(X, np.ndarray) or not isinstance(y, np.ndarray):
+            raise ValueError(f"cache entry for {symbol} must contain numpy arrays")
+        validated[symbol] = (X, y)
+
+    return validated
 
 
 def load_samples_cache() -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
@@ -70,8 +93,8 @@ def load_samples_cache() -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
         return {}
     try:
         with SAMPLES_CACHE.open("rb") as f:
-            return pickle.load(f)
-    except Exception:
+            return _validate_cache_structure(pickle.load(f))
+    except (UnpicklingError, EOFError, ValueError, OSError):
         return {}
 
 
@@ -102,7 +125,9 @@ def load_recent_history(hours: int = 24) -> List[dict]:
             parsed = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
             if parsed >= cutoff:
                 rows.append(item)
-        except Exception:
+        except json.JSONDecodeError:
+            continue
+        except ValueError:
             continue
     return rows
 
@@ -167,6 +192,7 @@ def build_dataset(
     threshold_pct: float = 0.5,
     cost_bps: float = 3.0,
     slippage_bps: float = 2.0,
+    min_history_bars: int = 30,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Create features and labels from OHLCV DataFrame.
@@ -175,7 +201,7 @@ def build_dataset(
     features: List[np.ndarray] = []
     labels: List[int] = []
 
-    if len(df) < 55:
+    if len(df) < min_history_bars:
         return np.array([]), np.array([])
 
     for idx in range(20, len(df) - lookahead):
@@ -357,7 +383,13 @@ def fetch_yfinance_history(symbol: str) -> object:
     return cleaned
 
 
-def fetch_training_data(bot: StockTradingBot, symbol: str, requested_timeframe: str, limit: int) -> Tuple[object, str, int]:
+def fetch_training_data(
+    bot: StockTradingBot,
+    symbol: str,
+    requested_timeframe: str,
+    limit: int,
+    min_required_bars: int = 55,
+) -> Tuple[object, str, int]:
     """Fetch training bars and fall back to broader timeframes or Yahoo Finance if needed."""
     fallback_timeframes = [requested_timeframe, "1Day", "4Hour", "1Hour", "15Min"]
     seen = set()
@@ -371,6 +403,13 @@ def fetch_training_data(bot: StockTradingBot, symbol: str, requested_timeframe: 
         df = bot.fetch_bars(symbol, limit=limit)
         if df.empty:
             print(f"Fetched 0 bars for {symbol} at timeframe {timeframe}")
+            continue
+
+        if len(df) < min_required_bars:
+            print(
+                f"Fetched {len(df)} bars for {symbol} at timeframe {timeframe} "
+                f"(<{min_required_bars}); trying fallback"
+            )
             continue
 
         print(f"Fetched {len(df)} bars for {symbol} at timeframe {timeframe}")
@@ -507,6 +546,8 @@ def render_training_png_v2(results: List[SymbolTrainingResult], summary: dict, o
 
 
 def main() -> int:
+    from stock_bot import StockTradingBot
+
     parser = argparse.ArgumentParser(description="Train stock RF bot with sample caching (v2)")
     parser.add_argument("--limit", type=int, default=1500, help="Bars to fetch per symbol (increased)")
     parser.add_argument("--timeframe", default="1Day", help="Alpaca timeframe to use for training")
@@ -545,7 +586,13 @@ def main() -> int:
     print(f"[*] Loaded sample cache with {len(sample_cache)} symbol entries")
 
     for symbol in config.symbols:
-        df, used_timeframe, bar_count = fetch_training_data(bot, symbol, args.timeframe, args.limit)
+        df, used_timeframe, bar_count = fetch_training_data(
+            bot,
+            symbol,
+            args.timeframe,
+            args.limit,
+            min_required_bars=max(30, args.lookahead_bars + 20),
+        )
         print(f"Using timeframe {used_timeframe} for {symbol} ({bar_count} bars)")
 
         # Build new dataset
@@ -555,6 +602,7 @@ def main() -> int:
             threshold_pct=args.threshold,
             cost_bps=args.cost_bps,
             slippage_bps=args.slippage_bps,
+            min_history_bars=max(30, args.lookahead_bars + 20),
         )
         print(f"Built {len(X_current)} new training samples for {symbol}")
 
@@ -656,6 +704,11 @@ def main() -> int:
     ai.fit(X_train_all, y_train_all)
 
     overlap_ratio = train_test_overlap_ratio(X_train_all, X_test_all)
+    if overlap_ratio > MAX_TRAIN_TEST_OVERLAP_RATIO:
+        raise RuntimeError(
+            f"Train/test overlap {overlap_ratio:.2%} exceeds allowed "
+            f"{MAX_TRAIN_TEST_OVERLAP_RATIO:.2%}."
+        )
 
     if len(X_test_all) > 0 and len(set(y_test_all)) > 1:
         X_test_scaled = ai.scaler.transform(X_test_all)

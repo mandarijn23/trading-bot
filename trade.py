@@ -9,6 +9,7 @@ Run: python trade.py
 
 import sys
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -69,8 +70,7 @@ def run_stocks() -> int:
         print("  Run: python setup_stocks.py")
         return 1
     
-    os.system("PYTHONPATH=core:models:strategies:utils:config python core/stock_bot.py")
-    return 0
+    return _run_python(["core/stock_bot.py"], add_project_paths=True)
 
 
 def run_crypto() -> int:
@@ -85,8 +85,7 @@ def run_crypto() -> int:
         print("  Add keys to .env and try again")
         return 1
     
-    os.system("PYTHONPATH=core:models:strategies:utils:config python core/bot.py")
-    return 0
+    return _run_python(["core/bot.py"], add_project_paths=True)
 
 
 def run_backtest() -> int:
@@ -102,16 +101,14 @@ def run_backtest() -> int:
     choice = input("  Choose (1-3): ").strip()
     
     if choice == "1":
-        os.system("python backtest.py")
+        return _run_python(["tools/backtest.py"], add_project_paths=True)
     elif choice == "2":
-        os.system("python backtest.py --ai-enhanced")
+        return _run_python(["tools/backtest.py", "--ai-enhanced"], add_project_paths=True)
     elif choice == "3":
-        os.system("python backtest.py --compare-ai")
+        return _run_python(["tools/backtest.py", "--compare-ai"], add_project_paths=True)
     else:
         print("  ❌ Invalid choice")
         return 1
-    
-    return 0
 
 
 def run_ai() -> int:
@@ -127,18 +124,21 @@ def run_ai() -> int:
     choice = input("  Choose (1-3): ").strip()
     
     if choice == "1":
-        os.system("python ai_manage.py stats")
+        return _run_python(["ai_manage.py", "stats"], add_project_paths=True)
     elif choice == "2":
         symbol = input("  Symbol (default=BTC/USDT): ").strip() or "BTC/USDT"
-        epochs = input("  Epochs (default=20): ").strip() or "20"
-        os.system(f"python ai_manage.py train {symbol} {epochs}")
+        epochs_raw = input("  Epochs (default=20): ").strip() or "20"
+        try:
+            epochs = str(int(epochs_raw))
+        except ValueError:
+            print("  ❌ Epochs must be an integer")
+            return 1
+        return _run_python(["ai_manage.py", "train", symbol, epochs], add_project_paths=True)
     elif choice == "3":
-        os.system("python ai_manage.py reset")
+        return _run_python(["ai_manage.py", "reset"], add_project_paths=True)
     else:
         print("  ❌ Invalid choice")
         return 1
-    
-    return 0
 
 
 def run_setup() -> int:
@@ -153,14 +153,35 @@ def run_setup() -> int:
     choice = input("  Choose (1-2): ").strip()
     
     if choice == "1":
-        os.system("python setup_stocks.py")
+        return _run_python(["setup_stocks.py"], add_project_paths=True)
     elif choice == "2":
-        os.system("python validate_setup.py")
+        return _run_python(["tools/validate_setup.py"], add_project_paths=True)
     else:
         print("  ❌ Invalid choice")
         return 1
-    
-    return 0
+
+
+def _run_python(args: list[str], add_project_paths: bool = False) -> int:
+    """Run a Python script safely without shell interpolation."""
+    env = os.environ.copy()
+
+    if add_project_paths:
+        root = Path(__file__).resolve().parent
+        extra_paths = [
+            root,
+            root / "core",
+            root / "models",
+            root / "strategies",
+            root / "utils",
+            root / "config",
+            root / "tools",
+        ]
+        existing = env.get("PYTHONPATH", "")
+        merged = os.pathsep.join(str(p) for p in extra_paths)
+        env["PYTHONPATH"] = f"{merged}{os.pathsep}{existing}" if existing else merged
+
+    completed = subprocess.run([sys.executable, *args], env=env, check=False)
+    return int(completed.returncode)
 
 
 def main() -> int:
@@ -187,11 +208,9 @@ def main() -> int:
             elif bot_type == "setup":
                 return run_setup()
             elif bot_type == "preflight":
-                os.system("python paper_launch_check.py --mode auto")
-                return 0
+                return _run_python(["paper_launch_check.py", "--mode", "auto"], add_project_paths=True)
             elif bot_type == "daily_report":
-                os.system("python daily_performance_report.py")
-                return 0
+                return _run_python(["daily_performance_report.py"], add_project_paths=True)
     
     except KeyboardInterrupt:
         print("\n\n  ❌ Cancelled")

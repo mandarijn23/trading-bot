@@ -49,8 +49,10 @@ htmlcov/
 *.log
 bot.log
 backtest.log
+*.bak
 
 # Data
 *.csv
 logs/profile_cycle_state.env
 logs/performance_graph.png
+edge_refinement_report.json

@@ -135,6 +135,7 @@ class StockPosition:
 
     def check_exit(self, price: float, trailing_stop_pct: float) -> Literal["HOLD", "TRAIL_STOP", "TAKE_PROFIT"]:
         """Check if should exit."""
+        logger = logging.getLogger("stock-bot")
         if self.active:
             logger.debug(f"[{self.symbol}] Price: ${price:.2f} Trail: ${self.trailing_stop:.2f} TP: ${self.take_profit:.2f}")
         if not self.active:

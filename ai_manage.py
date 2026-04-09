@@ -13,14 +13,29 @@ import ccxt
 import pandas as pd
 from pathlib import Path
 
-from config import load_config
-from ml_model import TradingAI
+try:
+    from ml_model import TradingAI
+    _ML_IMPORT_ERROR = None
+except Exception as exc:
+    TradingAI = None
+    _ML_IMPORT_ERROR = exc
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s %(message)s",
 )
 log = logging.getLogger(__name__)
+
+
+def _require_trading_ai():
+    """Return TradingAI class or raise a clear dependency error."""
+    if TradingAI is None:
+        detail = f" ({_ML_IMPORT_ERROR})" if _ML_IMPORT_ERROR else ""
+        raise RuntimeError(
+            "AI module unavailable. Install optional ML deps (e.g. tensorflow) and retry"
+            f"{detail}."
+        )
+    return TradingAI
 
 
 def fetch_historical_data(symbol: str, timeframe: str = "1h", limit: int = 2000) -> pd.DataFrame:
@@ -48,7 +63,8 @@ def train_model(symbol: str, epochs: int = 20) -> None:
         log.info(f"✅ Got {len(df)} candles from {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
         
         # Initialize model
-        ai = TradingAI()
+        ai_cls = _require_trading_ai()
+        ai = ai_cls()
         
         # Train
         history = ai.train(df, epochs=epochs)
@@ -74,7 +90,8 @@ def show_stats() -> None:
     log.info("🤖 AI PERFORMANCE STATISTICS")
     log.info("=" * 60)
     
-    ai = TradingAI()
+    ai_cls = _require_trading_ai()
+    ai = ai_cls()
     stats = ai.get_stats()
     
     if "status" in stats:
@@ -92,7 +109,8 @@ def reset_model() -> None:
     response = input("Type 'YES' to confirm: ")
     
     if response == "YES":
-        ai = TradingAI()
+        ai_cls = _require_trading_ai()
+        ai = ai_cls()
         
         # Delete model file
         if ai.model_path.exists():

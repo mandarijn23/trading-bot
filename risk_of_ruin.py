@@ -132,15 +132,14 @@ class RiskOfRuinCalculator:
         # ========== Calculate Results ==========
         probability_of_ruin = ruined_count / num_simulations
         
-        # Trades until probability drops below 1%
-        trades_until_safe = 50  # Default fallback
-        for n in range(1, 5000):
-            p = RiskOfRuinCalculator._ruin_probability_kelly(
-                win_rate, avg_win_pct, avg_loss_pct, n
-            )
-            if p < 0.01:
-                trades_until_safe = n
-                break
+        # Trades until ruin probability crosses 1% (Monte Carlo horizon estimate).
+        trades_until_safe = RiskOfRuinCalculator._trades_until_one_percent_ruin(
+            win_rate=win_rate,
+            avg_win_pct=avg_win_pct,
+            avg_loss_pct=avg_loss_pct,
+            starting_capital=starting_capital,
+            blowup_threshold=blowup_threshold,
+        )
         
         # Expected time to ruin
         expected_time_to_ruin = (
@@ -164,39 +163,53 @@ class RiskOfRuinCalculator:
         )
     
     @staticmethod
-    def _ruin_probability_kelly(
+    def _trades_until_one_percent_ruin(
         win_rate: float,
-        avg_win: float,
-        avg_loss: float,
-        num_trades: int,
-    ) -> float:
+        avg_win_pct: float,
+        avg_loss_pct: float,
+        starting_capital: float,
+        blowup_threshold: float,
+        num_simulations: int = 3000,
+        max_horizon: int = 1000,
+    ) -> int:
         """
-        Calculate ruin probability using Kelly Criterion.
-        
-        More accurate for predicting probability over many trades.
+        Return the largest trade horizon where ruin probability stays below 1%.
+
+        Estimated directly from Monte Carlo, which is more robust than closed-form
+        approximations for non-ideal trade distributions.
         """
-        if avg_loss <= 0 or avg_win <= 0 or win_rate <= 0:
-            return 1.0  # Can't win
-        
-        if win_rate > 0.5:
-            # You have edge
-            win_pct = win_rate
-            loss_pct = 1 - win_rate
-            ratio = avg_win / avg_loss
-            
-            # Kelly fraction
-            kelly_f = (win_pct * ratio - loss_pct) / ratio
-            
-            if kelly_f <= 0:
-                return 1.0  # Can't profitably trade (even winning strategy)
-            
-            # Ruin probability ≈ (loss_pct/win_pct) ^ (f * num_trades)
-            probability = ((loss_pct / win_pct) ** (kelly_f * num_trades)) if win_pct > 0 else 1.0
-        else:
-            # You're losing
-            probability = 1.0
-        
-        return min(max(probability, 0.0), 1.0)
+        if starting_capital <= 0 or avg_win_pct <= 0 or avg_loss_pct <= 0:
+            return 0
+
+        ruined_by_trade = []
+        threshold_capital = starting_capital * blowup_threshold
+
+        for _ in range(num_simulations):
+            capital = starting_capital
+            ruin_trade = None
+
+            for trade_idx in range(1, max_horizon + 1):
+                if np.random.random() < win_rate:
+                    capital *= (1 + avg_win_pct)
+                else:
+                    capital *= max(0.0, 1 - avg_loss_pct)
+
+                if capital <= threshold_capital:
+                    ruin_trade = trade_idx
+                    break
+
+            ruined_by_trade.append(ruin_trade)
+
+        last_safe = 0
+        for horizon in range(1, max_horizon + 1):
+            ruined = sum(1 for t in ruined_by_trade if t is not None and t <= horizon)
+            p_ruin = ruined / max(num_simulations, 1)
+            if p_ruin < 0.01:
+                last_safe = horizon
+            else:
+                break
+
+        return last_safe
 
 
 def check_strategy_safety(
@@ -204,6 +217,7 @@ def check_strategy_safety(
     avg_win: float,
     avg_loss: float,
     max_drawdown: float = None,
+    starting_capital: float = 10000.0,
     verbose: bool = True,
 ) -> bool:
     """
@@ -219,15 +233,18 @@ def check_strategy_safety(
     Returns:
         True if safe to trade, False if too risky
     """
-    # Convert to percentages
-    avg_win_pct = avg_win / 10000.0  # Assume 10k account
-    avg_loss_pct = avg_loss / 10000.0
+    if starting_capital <= 0:
+        raise ValueError("starting_capital must be > 0")
+
+    # Convert to percentages from absolute per-trade PnL amounts.
+    avg_win_pct = avg_win / starting_capital
+    avg_loss_pct = avg_loss / starting_capital
     
     analysis = RiskOfRuinCalculator.calculate(
         win_rate=win_rate,
         avg_win_pct=avg_win_pct,
         avg_loss_pct=avg_loss_pct,
-        starting_capital=10000.0,
+        starting_capital=starting_capital,
     )
     
     if verbose:

@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 
 from discord_alerts import discord
-from train_stock_rf import SymbolTrainingResult, render_training_svg, render_training_png, HAS_PIL
+try:
+    from train_stock_rf import SymbolTrainingResult, render_training_svg, render_training_png, HAS_PIL
+except ImportError:
+    from models.train_stock_rf import SymbolTrainingResult, render_training_svg, render_training_png, HAS_PIL
 
 
 def main() -> int:

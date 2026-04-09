@@ -17,6 +17,8 @@ from urllib.parse import quote
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 for rel in ("utils", "config", "core", "models", "strategies"):
@@ -146,7 +148,17 @@ def render_chart_png(chart_config: dict, output_path: Path) -> None:
         f"w=1280&h=720&devicePixelRatio=2&format=png&backgroundColor=white&c={quote(payload)}"
     )
 
-    response = requests.get(url, timeout=20)
+    retry = Retry(
+        total=3,
+        backoff_factor=0.8,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+
+    response = session.get(url, timeout=20)
     response.raise_for_status()
     output_path.write_bytes(response.content)
 
