@@ -138,6 +138,36 @@ class DiscordAlerts:
             print(f"❌ Discord file send failed: {e}")
             return False
     
+    def send_chart(
+        self,
+        title: str,
+        chart_url: str,
+        color: int = 3447003,
+    ) -> bool:
+        """Send a Discord embed with an embedded chart image from QuickChart URL."""
+        if not self.enabled:
+            return False
+
+        try:
+            embed = {
+                "title": title,
+                "color": color,
+                "image": {"url": chart_url},
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            data = {"embeds": [embed]}
+            response = requests.post(
+                self.webhook_url,
+                json=data,
+                timeout=5,
+            )
+
+            return response.status_code in (200, 204)
+        except Exception as e:
+            print(f"❌ Discord chart send failed: {e}")
+            return False
+    
     def notify_buy(self, symbol: str, price: float, qty: int, ai_confidence: float) -> bool:
         """Notify on BUY order."""
         return self.send_message(

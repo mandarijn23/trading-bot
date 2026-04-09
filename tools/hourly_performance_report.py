@@ -258,26 +258,139 @@ def generate_quickchart_cumulative_pnl(df: pd.DataFrame) -> str:
     return f"https://quickchart.io/chart?c={encoded}"
 
 
-def generate_quickchart_hourly_uptime(log_dir: Path) -> str:
-    """Generate QuickChart URL for uptime/downtime by hour."""
-    # Try to determine uptime from systemd journal or log files
-    uptime_data = {
-        "online": 0,
-        "offline": 0,
-    }
+def generate_quickchart_hourly_uptime(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for hourly uptime timeline."""
+    if df.empty:
+        return ""
     
-    # Simple heuristic: if we have recent trades, bot was online
-    # If no trades in last 2 hours, assume offline
+    df_copy = df.copy()
+    df_copy["hour"] = df_copy["timestamp"].dt.floor("h")
+    hourly_activity = df_copy.groupby("hour").size()
+    
+    # Determine online/offline per hour (if activity > 0, was online)
+    labels = [t.strftime("%H:%M") for t in hourly_activity.index]
+    online = [1 if count > 0 else 0 for count in hourly_activity.values]
+    offline = [0 if count > 0 else 1 for count in hourly_activity.values]
+    
     chart = {
-        "type": "pie",
+        "type": "bar",
         "data": {
-            "labels": ["Online", "Offline"],
+            "labels": labels,
             "datasets": [
                 {
-                    "label": "Uptime Status",
-                    "data": [uptime_data["online"], uptime_data["offline"]],
+                    "label": "Online",
+                    "data": online,
+                    "backgroundColor": "#00FF00",
+                    "borderColor": "#00AA00",
+                    "borderWidth": 1,
+                },
+                {
+                    "label": "Offline",
+                    "data": offline,
+                    "backgroundColor": "#FF0000",
+                    "borderColor": "#AA0000",
+                    "borderWidth": 1,
+                },
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Hourly Uptime/Downtime Status",
+                    "fontSize": 16,
+                },
+            },
+            "scales": {
+                "x": {"stacked": True},
+                "y": {"stacked": True, "beginAtZero": True},
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_win_rate_trend(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for win rate trend over time."""
+    sell_df = df[df["side"].astype(str).str.lower().isin(["sell", "exit"])].copy()
+    
+    if sell_df.empty or len(sell_df) < 1:
+        return ""
+    
+    sell_df = sell_df.dropna(subset=["pnl_pct_num"]).reset_index(drop=True)
+    if len(sell_df) < 2:
+        return ""
+    
+    # Calculate rolling win rate (every 5 trades)
+    window = min(5, len(sell_df))
+    win_rate_rolling = []
+    
+    for i in range(len(sell_df)):
+        start = max(0, i - window + 1)
+        slice_df = sell_df.iloc[start:i+1]
+        wins = (slice_df["pnl_pct_num"] > 0).sum()
+        win_pct = (wins / len(slice_df) * 100) if len(slice_df) > 0 else 0
+        win_rate_rolling.append(win_pct)
+    
+    labels = [str(i) for i in range(len(win_rate_rolling))]
+    
+    chart = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": f"Win Rate % ({window}-trade rolling)",
+                    "data": win_rate_rolling,
+                    "borderColor": "#3498DB",
+                    "backgroundColor": "#3498DB20",
+                    "borderWidth": 2,
+                    "fill": True,
+                    "tension": 0.3,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Win Rate Trend",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {
+                    "min": 0,
+                    "max": 100,
+                    "title": {"display": True, "text": "Win %"},
+                }
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_avg_win_loss(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for average win vs loss comparison."""
+    metrics = calculate_metrics(df)
+    
+    chart = {
+        "type": "bar",
+        "data": {
+            "labels": ["Avg Win %", "Avg Loss %"],
+            "datasets": [
+                {
+                    "label": "Average Trade Result",
+                    "data": [metrics["avg_win"], abs(metrics["avg_loss"])],
                     "backgroundColor": ["#00FF00", "#FF0000"],
-                    "borderColor": "#FFFFFF",
+                    "borderColor": ["#00AA00", "#AA0000"],
                     "borderWidth": 2,
                 }
             ],
@@ -286,10 +399,305 @@ def generate_quickchart_hourly_uptime(log_dir: Path) -> str:
             "plugins": {
                 "title": {
                     "display": True,
-                    "text": "Last 24h Uptime Status",
+                    "text": "Average Win vs Loss %",
                     "fontSize": 16,
                 },
-                "legend": {"position": "bottom"},
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {"title": {"display": True, "text": "PnL %"}}
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_pnl_per_symbol(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for PnL breakdown by symbol."""
+    sell_df = df[df["side"].astype(str).str.lower().isin(["sell", "exit"])].copy()
+    
+    if sell_df.empty:
+        return ""
+    
+    sell_df = sell_df.dropna(subset=["pnl_pct_num"]).copy()
+    symbol_pnl = sell_df.groupby("symbol")["pnl_pct_num"].sum().sort_values(ascending=False)
+    
+    if symbol_pnl.empty:
+        return ""
+    
+    labels = symbol_pnl.index.tolist()
+    data = symbol_pnl.values.tolist()
+    
+    # Color based on positive/negative
+    colors = ["#00FF00" if x > 0 else "#FF0000" for x in data]
+    
+    chart = {
+        "type": "bar",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "PnL % by Symbol",
+                    "data": data,
+                    "backgroundColor": colors,
+                    "borderColor": ["#00AA00" if x > 0 else "#AA0000" for x in data],
+                    "borderWidth": 1,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Profit/Loss by Symbol",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {"title": {"display": True, "text": "Total PnL %"},
+                      "beginAtZero": True}
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_trade_frequency(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for trades per hour."""
+    if df.empty:
+        return ""
+    
+    df_copy = df.copy()
+    df_copy["hour"] = df_copy["timestamp"].dt.floor("h").dt.strftime("%H:%M")
+    hourly_counts = df_copy.groupby("hour").size()
+    
+    labels = hourly_counts.index.tolist()
+    data = hourly_counts.values.tolist()
+    
+    chart = {
+        "type": "bar",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "Trades per Hour",
+                    "data": data,
+                    "backgroundColor": "#9B59B6",
+                    "borderColor": "#6C3A6F",
+                    "borderWidth": 1,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Trading Activity - Trades per Hour",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {
+                    "beginAtZero": True,
+                    "title": {"display": True, "text": "Trade Count"},
+                }
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_max_drawdown(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for drawdown visualization."""
+    sell_df = df[df["side"].astype(str).str.lower().isin(["sell", "exit"])].copy()
+    
+    if sell_df.empty:
+        return ""
+    
+    sell_df = sell_df.dropna(subset=["pnl_pct_num"]).reset_index(drop=True)
+    if len(sell_df) < 1:
+        return ""
+    
+    # Calculate cumulative returns and drawdown
+    cumulative = sell_df["pnl_pct_num"].cumsum()
+    running_max = cumulative.expanding().max()
+    drawdown = cumulative - running_max
+    
+    labels = [str(i) for i in range(len(drawdown))]
+    
+    chart = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "Drawdown %",
+                    "data": drawdown.tolist(),
+                    "borderColor": "#FF6B6B",
+                    "backgroundColor": "#FF6B6B40",
+                    "borderWidth": 2,
+                    "fill": True,
+                    "tension": 0.1,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Max Drawdown Over Time",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {"title": {"display": True, "text": "Drawdown %"}}
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_win_streak(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for win/loss streak histogram."""
+    sell_df = df[df["side"].astype(str).str.lower().isin(["sell", "exit"])].copy()
+    
+    if sell_df.empty:
+        return ""
+    
+    sell_df = sell_df.dropna(subset=["pnl_pct_num"]).reset_index(drop=True)
+    if len(sell_df) < 2:
+        return ""
+    
+    # Calculate streaks
+    is_win = (sell_df["pnl_pct_num"] > 0).astype(int)
+    streaks = []
+    current_streak = 0
+    
+    for win in is_win:
+        if win == is_win.iloc[0]:
+            current_streak += 1
+        else:
+            streaks.append((is_win.iloc[0], current_streak))
+            is_win.iloc[0] = win
+            current_streak = 1
+    
+    if current_streak > 0:
+        streaks.append((is_win.iloc[-1], current_streak))
+    
+    # Count streak lengths
+    win_streaks = [s[1] for s in streaks if s[0] == 1]
+    loss_streaks = [s[1] for s in streaks if s[0] == 0]
+    
+    max_win_streak = max(win_streaks) if win_streaks else 0
+    max_loss_streak = max(loss_streaks) if loss_streaks else 0
+    
+    chart = {
+        "type": "bar",
+        "data": {
+            "labels": ["Max Win Streak", "Max Loss Streak"],
+            "datasets": [
+                {
+                    "label": "Trades",
+                    "data": [max_win_streak, max_loss_streak],
+                    "backgroundColor": ["#00FF00", "#FF0000"],
+                    "borderColor": ["#00AA00", "#AA0000"],
+                    "borderWidth": 1,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "Win/Loss Streaks",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {
+                    "beginAtZero": True,
+                    "title": {"display": True, "text": "Consecutive Trades"},
+                }
+            },
+        },
+    }
+    
+    chart_json = json.dumps(chart)
+    encoded = quote(chart_json)
+    return f"https://quickchart.io/chart?c={encoded}"
+
+
+def generate_quickchart_money_earned(df: pd.DataFrame) -> str:
+    """Generate QuickChart URL for total money earned per symbol."""
+    sell_df = df[df["side"].astype(str).str.lower().isin(["sell", "exit"])].copy()
+    
+    if sell_df.empty:
+        return ""
+    
+    sell_df = sell_df.dropna(subset=["pnl_pct_num", "price", "quantity"]).copy()
+    
+    if sell_df.empty:
+        return ""
+    
+    # Calculate profit in dollars (approximate: price * quantity * pnl_pct)
+    sell_df["profit_usd"] = (sell_df["price"] * sell_df["quantity"] * sell_df["pnl_pct_num"]) / 100
+    
+    # Group by symbol
+    symbol_profit = sell_df.groupby("symbol")["profit_usd"].sum().sort_values(ascending=False)
+    
+    if symbol_profit.empty:
+        return ""
+    
+    labels = symbol_profit.index.tolist()
+    data = symbol_profit.values.tolist()
+    
+    # Color based on positive/negative
+    colors = ["#00FF00" if x > 0 else "#FF0000" for x in data]
+    
+    chart = {
+        "type": "bar",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "Profit/Loss ($)",
+                    "data": data,
+                    "backgroundColor": colors,
+                    "borderColor": ["#00AA00" if x > 0 else "#AA0000" for x in data],
+                    "borderWidth": 1,
+                }
+            ],
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": "💰 Total Money Earned/Lost by Symbol",
+                    "fontSize": 16,
+                },
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {
+                    "beginAtZero": True,
+                    "title": {"display": True, "text": "USD ($)"},
+                }
             },
         },
     }
@@ -304,19 +712,19 @@ def send_performance_report_to_discord(
     metrics: dict,
     urls: dict,
 ) -> bool:
-    """Send formatted performance report to Discord with embedded chart URLs."""
+    """Send performance report with embedded chart images."""
     
+    # Main metrics
     fields = {
-        "Total Trades": metrics["total_trades"],
-        "Wins": metrics["win_count"],
-        "Losses": metrics["loss_count"],
-        "Win Rate": f"{metrics['win_pct']:.1f}%",
-        "Avg Win": f"{metrics['avg_win']:.2f}%",
-        "Avg Loss": f"{metrics['avg_loss']:.2f}%",
-        "Total PnL": f"{metrics['total_pnl_pct']:.2f}%",
+        "📊 Total Trades": metrics["total_trades"],
+        "✅ Wins": f"{metrics['win_count']} ({metrics['win_pct']:.1f}%)",
+        "❌ Losses": metrics["loss_count"],
+        "💰 Avg Win": f"{metrics['avg_win']:.2f}%",
+        "📉 Avg Loss": f"{metrics['avg_loss']:.2f}%",
+        "🎯 Total PnL": f"{metrics['total_pnl_pct']:.2f}%",
     }
     
-    title = "📊 Hourly Trading Performance Report"
+    title = "📊 Hourly Trading Performance"
     color = 65280 if metrics["total_pnl_pct"] > 0 else 16711680  # Green or Red
     
     # Send main metrics embed
@@ -326,27 +734,28 @@ def send_performance_report_to_discord(
         color=color,
     )
     
-    # Send chart embeds with image URLs
-    if urls.get("win_pct"):
-        discord.send_message(
-            title="📈 Win/Loss Distribution",
-            fields={"Chart": f"[View Chart]({urls['win_pct']})"},
-            color=color,
-        )
+    # Send each chart as an embedded image
+    chart_configs = [
+        ("📈 Win/Loss Distribution", "win_pct"),
+        ("📊 Daily Trade Count", "daily_trades"),
+        ("💹 Cumulative PnL Curve", "cumul_pnl"),
+        ("⏱️ Uptime/Downtime Status", "uptime"),
+        ("📈 Win Rate Trend", "win_rate_trend"),
+        ("📊 Average Win vs Loss", "avg_win_loss"),
+        ("🏆 PnL by Symbol", "pnl_per_symbol"),
+        ("📊 Trading Activity Frequency", "trade_frequency"),
+        ("⬇️ Maximum Drawdown", "max_drawdown"),
+        ("🔄 Win/Loss Streaks", "win_streak"),
+        ("💰 Money Earned by Symbol", "money_earned"),
+    ]
     
-    if urls.get("daily_trades"):
-        discord.send_message(
-            title="📊 Daily Trade Count",
-            fields={"Chart": f"[View Chart]({urls['daily_trades']})"},
-            color=color,
-        )
-    
-    if urls.get("cumul_pnl"):
-        discord.send_message(
-            title="💹 Cumulative PnL Curve",
-            fields={"Chart": f"[View Chart]({urls['cumul_pnl']})"},
-            color=color,
-        )
+    for chart_title, url_key in chart_configs:
+        if urls.get(url_key):
+            discord.send_chart(
+                title=chart_title,
+                chart_url=urls[url_key],
+                color=color,
+            )
     
     return success
 
@@ -385,7 +794,14 @@ def main():
         "win_pct": generate_quickchart_win_pct(df),
         "daily_trades": generate_quickchart_daily_trades(df),
         "cumul_pnl": generate_quickchart_cumulative_pnl(df),
-        "uptime": generate_quickchart_hourly_uptime(args.logs),
+        "uptime": generate_quickchart_hourly_uptime(df),
+        "win_rate_trend": generate_quickchart_win_rate_trend(df),
+        "avg_win_loss": generate_quickchart_avg_win_loss(df),
+        "pnl_per_symbol": generate_quickchart_pnl_per_symbol(df),
+        "trade_frequency": generate_quickchart_trade_frequency(df),
+        "max_drawdown": generate_quickchart_max_drawdown(df),
+        "win_streak": generate_quickchart_win_streak(df),
+        "money_earned": generate_quickchart_money_earned(df),
     }
     
     # Send to Discord
