@@ -88,6 +88,12 @@ class StockTradingConfig(BaseSettings):
     max_bar_spread_pct: float = Field(default=0.006, gt=0, lt=1, validation_alias="STOCK_MAX_BAR_SPREAD_PCT")
     max_entry_atr_pct: float = Field(default=0.03, gt=0, lt=1, validation_alias="STOCK_MAX_ENTRY_ATR_PCT")
     min_entry_dollar_volume: float = Field(default=5_000_000.0, ge=0, validation_alias="STOCK_MIN_ENTRY_DOLLAR_VOLUME")
+    max_risk_per_trade: float = Field(default=0.02, gt=0, lt=0.2, validation_alias="STOCK_MAX_RISK_PER_TRADE")
+    profit_optimized_sizing: bool = Field(default=True, validation_alias="STOCK_PROFIT_OPTIMIZED_SIZING")
+    min_conviction_risk_mult: float = Field(default=0.75, gt=0, le=1, validation_alias="STOCK_MIN_CONVICTION_RISK_MULT")
+    max_conviction_risk_mult: float = Field(default=1.75, ge=1, le=3, validation_alias="STOCK_MAX_CONVICTION_RISK_MULT")
+    high_confidence_threshold: float = Field(default=0.65, ge=0, le=1, validation_alias="STOCK_HIGH_CONFIDENCE_THRESHOLD")
+    very_high_confidence_threshold: float = Field(default=0.75, ge=0, le=1, validation_alias="STOCK_VERY_HIGH_CONFIDENCE_THRESHOLD")
     
     # Paper vs Live trading
     paper_trading: bool = Field(default=True, validation_alias="STOCK_PAPER_TRADING")
@@ -100,6 +106,35 @@ class StockTradingConfig(BaseSettings):
     decision_trace_enabled: bool = Field(default=True, validation_alias="STOCK_DECISION_TRACE_ENABLED")
     decision_trace_to_console: bool = Field(default=False, validation_alias="STOCK_DECISION_TRACE_TO_CONSOLE")
     decision_trace_file: str = Field(default="logs/decision_trace.jsonl", validation_alias="STOCK_DECISION_TRACE_FILE")
+    bars_limit: int = Field(default=250, ge=50, validation_alias="STOCK_BARS_LIMIT")
+    min_bars: int = Field(default=45, ge=20, validation_alias="STOCK_MIN_BARS")
+    insufficient_data_log_cooldown_sec: int = Field(
+        default=900,
+        ge=0,
+        validation_alias="STOCK_INSUFFICIENT_DATA_LOG_COOLDOWN",
+    )
+    account_snapshot_log_cooldown_sec: int = Field(
+        default=900,
+        ge=0,
+        validation_alias="STOCK_ACCOUNT_SNAPSHOT_LOG_COOLDOWN",
+    )
+    retrain_interval_trades: int = Field(
+        default=20,
+        ge=1,
+        validation_alias="STOCK_RETRAIN_INTERVAL_TRADES",
+    )
+    max_position_value_pct: float = Field(
+        default=0.25,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_POSITION_VALUE_PCT",
+    )
+    max_gross_exposure_pct: float = Field(
+        default=0.5,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_GROSS_EXPOSURE_PCT",
+    )
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, validation_alias="STOCK_USE_AI")

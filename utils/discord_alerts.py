@@ -29,10 +29,24 @@ class DiscordAlerts:
         self.webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
         self.enabled = bool(self.webhook_url)
         self.graph_mention = os.getenv("DISCORD_HOURLY_MENTION", "@jovial_lemur_47699").strip()
+        self.warning_cooldown_sec = int(os.getenv("DISCORD_WARNING_COOLDOWN_SEC", "300"))
+        self.error_cooldown_sec = int(os.getenv("DISCORD_ERROR_COOLDOWN_SEC", "900"))
+        self._last_sent_by_key: dict[str, datetime] = {}
         if self.enabled:
             print("✅ Discord notifications enabled")
         else:
             print("❌ Discord notifications disabled (set DISCORD_WEBHOOK_URL in .env)")
+
+    def _is_rate_limited(self, key: str, cooldown_sec: int) -> bool:
+        """Return True if message key is still within cooldown window."""
+        if cooldown_sec <= 0:
+            return False
+        now = datetime.now()
+        last_sent = self._last_sent_by_key.get(key)
+        if last_sent and (now - last_sent).total_seconds() < cooldown_sec:
+            return True
+        self._last_sent_by_key[key] = now
+        return False
     
     def send_message(self, title: str, fields: dict, color: int = 3447003) -> bool:
         """
@@ -172,6 +186,10 @@ class DiscordAlerts:
         """Send warning/error alert."""
         if details is None:
             details = {}
+
+        dedupe_key = f"warning:{message}:{json.dumps(details, sort_keys=True, default=str)}"
+        if self._is_rate_limited(dedupe_key, self.warning_cooldown_sec):
+            return False
         
         return self.send_message(
             f"⚠️ {message}",
@@ -183,6 +201,10 @@ class DiscordAlerts:
         """Send critical error alert."""
         if details is None:
             details = {}
+
+        dedupe_key = f"error:{message}:{json.dumps(details, sort_keys=True, default=str)}"
+        if self._is_rate_limited(dedupe_key, self.error_cooldown_sec):
+            return False
         
         return self.send_message(
             f"🔴 ERROR: {message}",

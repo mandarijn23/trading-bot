@@ -109,6 +109,58 @@ def test_discord():
         sys.exit(1)
 
 
+@cli.command("test-order")
+@click.option("--symbol", default="SPY", show_default=True, help="Trading symbol")
+@click.option("--qty", default=1, type=int, show_default=True, help="Order quantity")
+@click.option("--side", default="buy", type=click.Choice(["buy", "sell"]), show_default=True, help="Order side")
+def test_order(symbol: str, qty: int, side: str):
+    """Submit a real Alpaca paper test order through the bot stack."""
+    click.echo("🧪 Submitting paper test order via bot...\n")
+
+    try:
+        import alpaca_trade_api as tradeapi
+
+        config = load_stock_config()
+        config.paper_trading = True
+        if symbol not in config.symbols:
+            config.symbols = [symbol]
+
+        api = tradeapi.REST(
+            key_id=config.alpaca_api_key,
+            secret_key=config.alpaca_api_secret,
+            base_url=config.alpaca_base_url,
+        )
+
+        current_price = float(api.get_bars(symbol, config.timeframe, limit=5).df["close"].iloc[-1])
+        click.echo(f"Current {symbol} price: {current_price:.2f}")
+
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            type="market",
+            time_in_force="day",
+        )
+
+        click.echo(f"✅ Order submitted: {order.id}")
+        click.echo(f"   Symbol: {order.symbol}")
+        click.echo(f"   Side: {order.side}")
+        click.echo(f"   Qty: {order.qty}")
+        click.echo(f"   Status: {order.status}")
+        click.echo(f"   Type: {order.type}")
+        click.echo(f"   TIF: {order.time_in_force}")
+
+        if discord:
+            if side == "buy":
+                discord.notify_buy(symbol, current_price, qty, 0.50)
+            else:
+                discord.notify_sell(symbol, current_price, current_price, qty, 0.0, "TEST_ORDER")
+
+    except Exception as e:
+        click.echo(f"❌ Test order failed: {e}")
+        sys.exit(1)
+
+
 @cli.command()
 def retrain():
     """Force model retraining."""
@@ -252,11 +304,15 @@ def validate_release(include_backtest: bool):
 
 
 @cli.command()
-@click.confirmation_option(
-    prompt="🚨 This will DELETE all trade history. Continue?"
-)
-def reset_trades():
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+def reset_trades(yes: bool):
     """Reset trade history (WARNING: Destructive)."""
+    if not yes:
+        confirmed = click.confirm("🚨 This will DELETE all trade history. Continue?", default=False)
+        if not confirmed:
+            click.echo("Cancelled.")
+            return
+
     csv_file = Path("trades_history.csv")
     pkl_file = Path("trading_model_rf.pkl")
     
@@ -304,7 +360,7 @@ def version():
 @click.option("--mode", type=click.Choice(["stocks"]), default="stocks", show_default=True)
 def preflight(mode: str):
     """Run paper-trading preflight checklist."""
-    code = os.system(f"python paper_launch_check.py --mode {mode}")
+    code = os.system(f'"{sys.executable}" paper_launch_check.py --mode {mode}')
     if code != 0:
         sys.exit(1)
 
@@ -313,7 +369,7 @@ def preflight(mode: str):
 @click.option("--json-output", is_flag=True, help="Print JSON report")
 def daily_report(json_output: bool):
     """Run daily performance and strategy-decay report."""
-    cmd = "python daily_performance_report.py"
+    cmd = f'"{sys.executable}" daily_performance_report.py'
     if json_output:
         cmd += " --json"
     code = os.system(cmd)
