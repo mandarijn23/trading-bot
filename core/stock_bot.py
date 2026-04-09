@@ -145,11 +145,17 @@ class StockPosition:
             self.trailing_stop = price * (1 - trailing_stop_pct)
         
         if price <= self.trailing_stop:
+            logger.info(
+                f"[{self.symbol}] EXIT TRAIL_STOP @ ${price:.2f} "
+                f"(Entry: ${self.entry_price:.2f}, Loss: {(price/self.entry_price - 1)*100:.1f}%)"
+            )
             return "TRAIL_STOP"
-            logger.info(f"[{self.symbol}] EXIT TRAIL_STOP @ ${price:.2f} (Entry: ${self.entry_price:.2f}, Loss: {(price/self.entry_price - 1)*100:.1f}%)")
         if price >= self.take_profit:
+            logger.info(
+                f"[{self.symbol}] EXIT TAKE_PROFIT @ ${price:.2f} "
+                f"(Entry: ${self.entry_price:.2f}, Gain: {(price/self.entry_price - 1)*100:.1f}%)"
+            )
             return "TAKE_PROFIT"
-            logger.info(f"[{self.symbol}] EXIT TAKE_PROFIT @ ${price:.2f} (Entry: ${self.entry_price:.2f}, Gain: {(price/self.entry_price - 1)*100:.1f}%)")
         
         return "HOLD"
 

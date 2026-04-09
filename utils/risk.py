@@ -25,6 +25,11 @@ import numpy as np
 from portfolio import Portfolio
 from indicators import Indicators
 
+try:
+    from market_hours import USMarketSession
+except Exception:
+    USMarketSession = None
+
 
 @dataclass
 class PositionSize:
@@ -69,14 +74,40 @@ class RiskManager:
         # ✅ NEW: Track recent trades for streak protection
         self.recent_trades: list[bool] = []  # True=win, False=loss
         self.max_streak_history = 20
+        self._market_hours_warned = False
+        self.market_session = USMarketSession() if (USMarketSession and self._is_stock_mode()) else None
+
+    def _is_stock_mode(self) -> bool:
+        """Infer stock mode from config shape/symbol style."""
+        if hasattr(self.config, "alpaca_api_key") or hasattr(self.config, "alpaca_base_url"):
+            return True
+
+        symbols = getattr(self.config, "symbols", []) or []
+        normalized = [str(s) for s in symbols if str(s).strip()]
+        if not normalized:
+            return False
+
+        crypto_like = any("/" in s for s in normalized)
+        stock_like = any("/" not in s for s in normalized)
+        return stock_like and not crypto_like
     
     def is_market_hours(self) -> bool:
         """Check if current time is reasonable for trading."""
-        # For crypto, trading is 24/7
-        # For stocks, check market hours (9:30 AM - 4:00 PM EST)
-        if hasattr(self.config, 'paper_trading') and self.config.paper_trading:
-            return True  # Allow trading anytime in paper trading
-        return True  # 24/7 for crypto
+        # Crypto is 24/7. Stock trading can be gated to regular session hours.
+        if not self._is_stock_mode():
+            return True
+
+        enforce_market_hours = getattr(self.config, "enforce_market_hours", True)
+        if not enforce_market_hours:
+            return True
+
+        if self.market_session is None:
+            if not self._market_hours_warned:
+                self.logger.warning("USMarketSession unavailable; market-hours gating disabled")
+                self._market_hours_warned = True
+            return True
+
+        return self.market_session.is_open()
     
     def update_daily_stats(self, portfolio: Portfolio, won: bool) -> None:
         """Update daily win/loss statistics."""

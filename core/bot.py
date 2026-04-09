@@ -19,7 +19,6 @@ from collections import defaultdict
 import ccxt.async_support as ccxt
 import pandas as pd
 
-from config import load_config
 from strategy import get_signal
 from ml_model_rf import TradingAI
 from portfolio import Portfolio
@@ -225,7 +224,7 @@ class AsyncTradingBot:
             pos.tick_cooldown()
             
             # Check for position exit
-            exit_reason = pos.check_exit(price, self.config.trailing_stop_pct)
+            exit_reason = await pos.check_exit(price, self.config.trailing_stop_pct)
             if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
                 self.logger.info(f"[{symbol}] EXIT {exit_reason} @ {price:.2f}")
                 success = await self.place_order("sell", symbol, price)
@@ -243,11 +242,10 @@ class AsyncTradingBot:
                     # 🔔 Discord notification
                     qty = round(self.config.trade_amount_usdt / pos.entry_price, 6)
                     discord.notify_sell(symbol, pos.entry_price, price, qty, pnl_pct, exit_reason)
-                    
-                    pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
+                    await pos.close(was_loss=was_loss, cooldown_candles=self.config.cooldown_candles)
             
             # Check for entry signal
-            elif pos.ready():
+            elif await pos.ready():
                 signal = get_signal(
                     df,
                     self.config.rsi_period,
@@ -273,7 +271,7 @@ class AsyncTradingBot:
                         # 📊 Register in portfolio
                         qty = round(self.config.trade_amount_usdt / price, 6)
                         self.portfolio.open_position(symbol, price, qty, datetime.now())
-                        pos.open(price, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
+                        await pos.open(price, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence)
                         
                         # 🔔 Discord notification
                         discord.notify_buy(symbol, price, int(qty), ai_confidence)
@@ -370,6 +368,8 @@ class AsyncTradingBot:
 async def main() -> None:
     """Entry point."""
     try:
+        from config import load_config
+
         config = load_config()
         bot = AsyncTradingBot(config)
         await bot.run()

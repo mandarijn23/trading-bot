@@ -122,7 +122,7 @@ def test_exit_updates_ai_and_closes_position(monkeypatch):
 
     b = bot.AsyncTradingBot(_make_config())
     pos = bot.Position("BTC/USDT")
-    pos.open(price=100.0, stop_loss_pct=0.02, take_profit_pct=0.05, ai_confidence=0.8)
+    asyncio.run(pos.open(price=100.0, stop_loss_pct=0.02, take_profit_pct=0.05, ai_confidence=0.8))
     b.positions = {"BTC/USDT": pos}
     b.portfolio.open_position("BTC/USDT", 100.0, 1.0, pd.Timestamp("2026-01-01"))
 
