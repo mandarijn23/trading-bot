@@ -82,17 +82,3 @@ Use the dashboard and logs to review live behavior:
 - [Monitoring guide](docs/monitoring.md)
 - [Dashboard guide](docs/dashboard.md)
 
-## NAS Deployment
-
-For a complete NAS rollout, copy the repository to `/home/nas/trading-bot` and run:
-
-```bash
-chmod +x tools/install_nas_stack.sh
-sudo tools/install_nas_stack.sh /home/nas/trading-bot
-```
-
-This installs the stock session, watchdog, daily profile-graph job, and hourly training timer, then enables them with `systemd`.
-
-## Status
-
-The project is actively under development. The current focus is collecting paper-trading data, measuring trade quality, and improving the strategy from observed results rather than assumptions.
