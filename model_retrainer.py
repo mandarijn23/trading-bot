@@ -14,14 +14,18 @@ import pandas as pd
 class ModelRetrainer:
     """Retrain AI model with recent trade outcomes."""
     
-    def __init__(self, retrain_interval: int = 20):
+    def __init__(self, retrain_interval: int = 20, min_closed_trades: int = 30):
         """
         Args:
             retrain_interval: Retrain after this many trades
+            min_closed_trades: Minimum number of closed trades required before retraining
         """
         self.retrain_interval = retrain_interval
+        self.min_closed_trades = min_closed_trades
         self.trades_since_retrain = 0
         self.trade_history = []
+        self.closed_trades_count = 0
+        self.last_closed_trades_seen = 0
         self.load_trade_history()
     
     def load_trade_history(self) -> None:
@@ -31,13 +35,31 @@ class ModelRetrainer:
             try:
                 df = pd.read_csv(csv_file)
                 self.trade_history = df.to_dict('records')
-                self.trades_since_retrain = len(self.trade_history) % self.retrain_interval
+                if "side" in df.columns:
+                    closed_df = df[df["side"].astype(str).str.lower() == "sell"]
+                else:
+                    closed_df = pd.DataFrame()
+                self.closed_trades_count = int(len(closed_df))
+                self.last_closed_trades_seen = self.closed_trades_count
             except Exception as e:
                 print(f"❌ Failed to load trade history: {e}")
     
-    def should_retrain(self) -> bool:
-        """Check if it's time to retrain model."""
-        self.trades_since_retrain += 1
+    def should_retrain(self, trade_closed: bool = False) -> bool:
+        """Check if it's time to retrain model.
+
+        Retraining should only be triggered by a newly closed trade event.
+        """
+        if not trade_closed:
+            return False
+
+        self.load_trade_history()
+        new_closed = max(0, self.closed_trades_count - self.last_closed_trades_seen)
+        self.last_closed_trades_seen = self.closed_trades_count
+        self.trades_since_retrain += new_closed if new_closed > 0 else 1
+
+        if self.closed_trades_count < self.min_closed_trades:
+            return False
+
         return self.trades_since_retrain >= self.retrain_interval
     
     def prepare_training_data(self) -> tuple:
@@ -108,6 +130,7 @@ class ModelRetrainer:
                 # (Model training logic depends on implementation)
                 
                 self.trades_since_retrain = 0
+                self.last_closed_trades_seen = self.closed_trades_count
                 print("✅ Model retrained successfully")
                 return True
             

@@ -50,6 +50,14 @@ class StockTradingConfig(BaseSettings):
         validation_alias="STOCK_UNIVERSE_SYMBOLS"
     )
 
+    # Symbol tiers for capital allocation and hard blocking.
+    symbol_tier_a: Annotated[List[str], NoDecode] = Field(default=[], validation_alias="STOCK_SYMBOL_TIER_A")
+    symbol_tier_b: Annotated[List[str], NoDecode] = Field(default=[], validation_alias="STOCK_SYMBOL_TIER_B")
+    symbol_tier_c: Annotated[List[str], NoDecode] = Field(default=[], validation_alias="STOCK_SYMBOL_TIER_C")
+    tier_weight_a: float = Field(default=1.00, ge=0.1, le=2.0, validation_alias="STOCK_TIER_WEIGHT_A")
+    tier_weight_b: float = Field(default=0.75, ge=0.1, le=2.0, validation_alias="STOCK_TIER_WEIGHT_B")
+    tier_weight_c: float = Field(default=0.0, ge=0.0, le=2.0, validation_alias="STOCK_TIER_WEIGHT_C")
+
     # Dynamic symbol selection controls.
     dynamic_symbol_selection: bool = Field(default=False, validation_alias="STOCK_DYNAMIC_SELECTION")
     dynamic_symbol_count: int = Field(default=3, ge=1, le=30, validation_alias="STOCK_DYNAMIC_SYMBOL_COUNT")
@@ -63,7 +71,7 @@ class StockTradingConfig(BaseSettings):
     # Timeframe for analysis (1min, 5min, 15min, 1h, 1d)
     timeframe: str = Field(default="15Min", validation_alias="STOCK_TIMEFRAME")
     
-    # RSI Settings (same as crypto but adjusted for stocks)
+    # RSI settings for stock strategy
     rsi_period: int = Field(default=14, ge=2, le=200, validation_alias="STOCK_RSI_PERIOD")
     rsi_oversold: float = Field(default=35, ge=0, le=50, validation_alias="STOCK_RSI_OVERSOLD")
     rsi_overbought: float = Field(default=65, ge=50, le=100, validation_alias="STOCK_RSI_OVERBOUGHT")
@@ -77,6 +85,9 @@ class StockTradingConfig(BaseSettings):
     cooldown_candles: int = Field(default=4, ge=0, validation_alias="STOCK_COOLDOWN")
     max_daily_loss_pct: float = Field(default=0.05, gt=0, lt=1, validation_alias="STOCK_MAX_DAILY_LOSS")
     max_open_positions: int = Field(default=2, ge=1, validation_alias="STOCK_MAX_OPEN_POS")
+    max_bar_spread_pct: float = Field(default=0.006, gt=0, lt=1, validation_alias="STOCK_MAX_BAR_SPREAD_PCT")
+    max_entry_atr_pct: float = Field(default=0.03, gt=0, lt=1, validation_alias="STOCK_MAX_ENTRY_ATR_PCT")
+    min_entry_dollar_volume: float = Field(default=5_000_000.0, ge=0, validation_alias="STOCK_MIN_ENTRY_DOLLAR_VOLUME")
     
     # Paper vs Live trading
     paper_trading: bool = Field(default=True, validation_alias="STOCK_PAPER_TRADING")
@@ -86,10 +97,48 @@ class StockTradingConfig(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="STOCK_LOG_LEVEL")
     log_max_mb: int = Field(default=10, ge=1, le=200, validation_alias="STOCK_LOG_MAX_MB")
     log_backup_count: int = Field(default=7, ge=1, le=30, validation_alias="STOCK_LOG_BACKUP_COUNT")
+    decision_trace_enabled: bool = Field(default=True, validation_alias="STOCK_DECISION_TRACE_ENABLED")
+    decision_trace_to_console: bool = Field(default=False, validation_alias="STOCK_DECISION_TRACE_TO_CONSOLE")
+    decision_trace_file: str = Field(default="logs/decision_trace.jsonl", validation_alias="STOCK_DECISION_TRACE_FILE")
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, validation_alias="STOCK_USE_AI")
     min_ai_confidence: float = Field(default=0.45, ge=0, le=1, validation_alias="STOCK_MIN_AI_CONFIDENCE")
+    min_ai_confidence_uptrend: float = Field(default=0.45, ge=0, le=1, validation_alias="STOCK_MIN_AI_CONFIDENCE_UPTREND")
+    min_ai_confidence_ranging: float = Field(default=0.55, ge=0, le=1, validation_alias="STOCK_MIN_AI_CONFIDENCE_RANGING")
+    min_ai_confidence_downtrend: float = Field(default=0.60, ge=0, le=1, validation_alias="STOCK_MIN_AI_CONFIDENCE_DOWNTREND")
+    regime_weight_uptrend: float = Field(default=1.00, ge=0.1, le=2.0, validation_alias="STOCK_REGIME_WEIGHT_UPTREND")
+    regime_weight_ranging: float = Field(default=0.70, ge=0.1, le=2.0, validation_alias="STOCK_REGIME_WEIGHT_RANGING")
+    regime_weight_downtrend: float = Field(default=0.50, ge=0.1, le=2.0, validation_alias="STOCK_REGIME_WEIGHT_DOWNTREND")
+
+    # External signal controls (news/X/events).
+    external_signals_enabled: bool = Field(default=False, validation_alias="STOCK_EXTERNAL_SIGNALS_ENABLED")
+    external_signal_cache_ttl: int = Field(default=300, ge=30, le=3600, validation_alias="STOCK_EXTERNAL_SIGNAL_CACHE_TTL")
+    external_signal_timeout_sec: float = Field(default=3.0, gt=0, le=30, validation_alias="STOCK_EXTERNAL_SIGNAL_TIMEOUT_SEC")
+    external_signal_min_confidence: float = Field(default=0.35, ge=0, le=1, validation_alias="STOCK_EXTERNAL_SIGNAL_MIN_CONFIDENCE")
+    external_sentiment_min: float = Field(default=-0.35, ge=-1, le=1, validation_alias="STOCK_EXTERNAL_SENTIMENT_MIN")
+    external_catalyst_min: float = Field(default=0.20, ge=0, le=1, validation_alias="STOCK_EXTERNAL_CATALYST_MIN")
+    external_event_risk_max: float = Field(default=0.85, ge=0, le=1, validation_alias="STOCK_EXTERNAL_EVENT_RISK_MAX")
+    external_symbol_weight: float = Field(default=0.05, ge=0, le=0.30, validation_alias="STOCK_EXTERNAL_SYMBOL_WEIGHT")
+
+    # Credentials and local feed path for external ingestion.
+    news_api_key: str = Field(default="", validation_alias="NEWS_API_KEY")
+    twitter_bearer_token: str = Field(default="", validation_alias="TWITTER_BEARER_TOKEN")
+    economic_calendar_api_key: str = Field(default="", validation_alias="ECONOMIC_CALENDAR_API_KEY")
+    external_signal_file: str = Field(default="logs/external_signals.json", validation_alias="STOCK_EXTERNAL_SIGNAL_FILE")
+
+    # Startup model-quality gate.
+    enforce_model_quality_gate: bool = Field(default=False, validation_alias="STOCK_ENFORCE_MODEL_QUALITY_GATE")
+    model_quality_report_path: str = Field(default="training_report.json", validation_alias="STOCK_MODEL_QUALITY_REPORT_PATH")
+    model_min_auc: float = Field(default=0.53, ge=0, le=1, validation_alias="STOCK_MODEL_MIN_AUC")
+    model_min_f1: float = Field(default=0.53, ge=0, le=1, validation_alias="STOCK_MODEL_MIN_F1")
+    model_min_holdout_samples: int = Field(default=60, ge=0, validation_alias="STOCK_MODEL_MIN_HOLDOUT_SAMPLES")
+
+    # Runtime decay gate.
+    decay_gate_enabled: bool = Field(default=True, validation_alias="STOCK_DECAY_GATE_ENABLED")
+    decay_gate_check_cycles: int = Field(default=10, ge=1, le=500, validation_alias="STOCK_DECAY_GATE_CHECK_CYCLES")
+    decay_gate_file: str = Field(default="logs/strategy_gate.json", validation_alias="STOCK_DECAY_GATE_FILE")
+    decay_gate_daily_loss_fraction: float = Field(default=0.5, gt=0, le=1, validation_alias="STOCK_DECAY_GATE_DAILY_LOSS_FRACTION")
     
     @field_validator("symbols", mode="before")
     @classmethod
@@ -98,6 +147,10 @@ class StockTradingConfig(BaseSettings):
             text = v.strip()
             if not text:
                 return ["SPY", "QQQ", "VOO"]
+
+            # Support values wrapped in quotes, e.g. "[SPY,QQQ,VOO]".
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+                text = text[1:-1].strip()
 
             # Accept JSON arrays and comma-separated values.
             if text.startswith("["):
@@ -113,7 +166,7 @@ class StockTradingConfig(BaseSettings):
 
             parsed = []
             for s in text.split(","):
-                clean = s.strip().strip('"').strip("'")
+                clean = s.strip().strip('"').strip("'").strip("[]")
                 if clean:
                     parsed.append(clean)
             return parsed
@@ -122,6 +175,21 @@ class StockTradingConfig(BaseSettings):
     @field_validator("universe_symbols", mode="before")
     @classmethod
     def parse_universe_symbols(cls, v):
+        return cls.parse_symbols(v)
+
+    @field_validator("symbol_tier_a", mode="before")
+    @classmethod
+    def parse_symbol_tier_a(cls, v):
+        return cls.parse_symbols(v)
+
+    @field_validator("symbol_tier_b", mode="before")
+    @classmethod
+    def parse_symbol_tier_b(cls, v):
+        return cls.parse_symbols(v)
+
+    @field_validator("symbol_tier_c", mode="before")
+    @classmethod
+    def parse_symbol_tier_c(cls, v):
         return cls.parse_symbols(v)
 
 

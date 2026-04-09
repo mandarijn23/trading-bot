@@ -2,7 +2,7 @@
 """
 Trading Bot Setup Wizard
 
-Interactive setup for all trading bot features.
+Interactive setup for stock bot features.
 
 Run: python setup.py
 """
@@ -81,21 +81,7 @@ def setup():
         print("❌ Invalid secret")
         return
     
-    print("\n2️⃣  CRYPTO TRADING (BINANCE) - Optional\n")
-    if prompt_yes_no("Set up Binance keys?"):
-        binance_key = prompt(
-            "Binance API Key (optional)",
-            default=os.getenv("BINANCE_API_KEY", "")
-        )
-        binance_secret = prompt(
-            "Binance API Secret (optional)",
-            default=os.getenv("BINANCE_API_SECRET", "")
-        )
-    else:
-        binance_key = os.getenv("BINANCE_API_KEY", "")
-        binance_secret = os.getenv("BINANCE_API_SECRET", "")
-    
-    print("\n3️⃣  DISCORD ALERTS - Optional\n")
+    print("\n2️⃣  DISCORD ALERTS - Optional\n")
     discord_webhook = ""
     if prompt_yes_no("Set up Discord webhook?"):
         discord_webhook = prompt(
@@ -106,33 +92,33 @@ def setup():
         if discord_webhook and not validate_webhook(discord_webhook):
             print("⚠️  Warning: Webhook URL looks invalid, but continuing...")
     
-    print("\n4️⃣  TRADING CONFIG\n")
+    print("\n3️⃣  TRADING CONFIG\n")
     
     min_ai_confidence = prompt(
         "Min AI Confidence (0.0-1.0)",
-        default=os.getenv("MIN_AI_CONFIDENCE", "0.45")
+        default=os.getenv("STOCK_MIN_AI_CONFIDENCE", "0.45")
     )
     
     max_daily_loss = prompt(
         "Max Daily Loss %",
-        default=os.getenv("MAX_DAILY_LOSS_PCT", "5")
+        default=os.getenv("STOCK_MAX_DAILY_LOSS", "0.05")
     )
     
     max_positions = prompt(
         "Max Open Positions",
-        default=os.getenv("MAX_OPEN_POSITIONS", "2")
+        default=os.getenv("STOCK_MAX_OPEN_POS", "2")
     )
     
     min_trade = prompt(
         "Min Trade Size ($)",
-        default=os.getenv("MIN_TRADE_USDT", "10")
+        default=os.getenv("STOCK_MIN_TRADE_AMOUNT", "10")
     )
     
-    print("\n5️⃣  LOGGING\n")
+    print("\n4️⃣  LOGGING\n")
     
     log_level = prompt(
         "Log Level (DEBUG/INFO/WARNING/ERROR)",
-        default=os.getenv("LOG_LEVEL", "INFO")
+        default=os.getenv("STOCK_LOG_LEVEL", "INFO")
     )
     
     # Build .env content
@@ -144,25 +130,21 @@ ALPACA_API_KEY={alpaca_key}
 ALPACA_API_SECRET={alpaca_secret}
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 
-# Crypto Trading (Binance) - Optional
-BINANCE_API_KEY={binance_key}
-BINANCE_API_SECRET={binance_secret}
-
 # Discord Alerts - Optional
 DISCORD_WEBHOOK_URL={discord_webhook}
 
 # Strategy
-MIN_AI_CONFIDENCE={min_ai_confidence}
-OVERSOLD_RSI=30
-OVERBOUGHT_RSI=70
+STOCK_MIN_AI_CONFIDENCE={min_ai_confidence}
+STOCK_RSI_OVERSOLD=35
+STOCK_RSI_OVERBOUGHT=65
 
 # Risk Management
-MAX_DAILY_LOSS_PCT={max_daily_loss}
-MAX_OPEN_POSITIONS={max_positions}
-MIN_TRADE_USDT={min_trade}
+STOCK_MAX_DAILY_LOSS={max_daily_loss}
+STOCK_MAX_OPEN_POS={max_positions}
+STOCK_MIN_TRADE_AMOUNT={min_trade}
 
 # Logging
-LOG_LEVEL={log_level}
+STOCK_LOG_LEVEL={log_level}
 """
     
     # Write .env

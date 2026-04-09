@@ -8,6 +8,7 @@ Commands:
   python cli.py reset-trades      - Clear trade history (⚠️  DANGEROUS)
   python cli.py stats             - Show AI performance stats
   python cli.py validate-config   - Verify environment setup
+    python cli.py validate-release  - Run full release validation gate
     python cli.py preflight         - Run paper-trading launch checklist
     python cli.py daily-report      - Run daily performance/decay report
 """
@@ -238,6 +239,18 @@ def validate_config():
     click.echo("\n✅ Configuration is valid! Ready to trade.")
 
 
+@cli.command("validate-release")
+@click.option("--include-backtest", is_flag=True, help="Include comparative backtest harness in the validation run")
+def validate_release(include_backtest: bool):
+    """Run the full release validation gate."""
+    cmd = [sys.executable, "tools/validate_release.py"]
+    if include_backtest:
+        cmd.append("--include-backtest")
+    code = os.system(" ".join(cmd))
+    if code != 0:
+        sys.exit(1)
+
+
 @cli.command()
 @click.confirmation_option(
     prompt="🚨 This will DELETE all trade history. Continue?"
@@ -284,11 +297,11 @@ def analyze():
 def version():
     """Show version info."""
     click.echo("Trading Bot v1.0.0 (Phase 6)")
-    click.echo("Features: Async Crypto + Stock Trading with AI + Discord + Retraining")
+    click.echo("Features: Stock trading with AI + Discord + retraining")
 
 
 @cli.command("preflight")
-@click.option("--mode", type=click.Choice(["auto", "crypto", "stocks"]), default="auto", show_default=True)
+@click.option("--mode", type=click.Choice(["stocks"]), default="stocks", show_default=True)
 def preflight(mode: str):
     """Run paper-trading preflight checklist."""
     code = os.system(f"python paper_launch_check.py --mode {mode}")

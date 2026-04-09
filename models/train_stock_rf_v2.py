@@ -27,6 +27,7 @@ from sklearn.utils import resample
 from ml_model_rf import TradingAI, FeatureExtractor
 from stock_config import load_stock_config
 from discord_alerts import discord
+from external_signals import ExternalSignalMonitor
 
 if TYPE_CHECKING:
     from stock_bot import StockTradingBot
@@ -384,6 +385,20 @@ def fetch_training_data(bot: StockTradingBot, symbol: str, requested_timeframe: 
     raise RuntimeError(f"Unable to fetch bars for {symbol} using any timeframe")
 
 
+def enrich_with_external_features(df, symbol: str, monitor: ExternalSignalMonitor):
+    """Attach external features as time-aligned columns using latest cached snapshot.
+
+    Training keeps these fields neutral when feeds are unavailable.
+    """
+    frame = df.copy()
+    snapshot = monitor.get_snapshot(symbol)
+    frame["external_sentiment"] = float(snapshot.sentiment_score)
+    frame["external_catalyst"] = float(snapshot.catalyst_score)
+    frame["external_event_risk"] = float(snapshot.event_risk)
+    frame["external_confidence"] = float(snapshot.confidence)
+    return frame
+
+
 def render_training_png_v2(results: List[SymbolTrainingResult], summary: dict, output_path: str) -> str:
     if not HAS_PIL:
         raise RuntimeError("Pillow not installed")
@@ -529,6 +544,7 @@ def main() -> int:
     bot.connect()
 
     ai = TradingAI()
+    external_monitor = ExternalSignalMonitor(config)
     results: List[SymbolTrainingResult] = []
     X_train_parts: List[np.ndarray] = []
     y_train_parts: List[np.ndarray] = []
@@ -546,6 +562,7 @@ def main() -> int:
 
     for symbol in config.symbols:
         df, used_timeframe, bar_count = fetch_training_data(bot, symbol, args.timeframe, args.limit)
+        df = enrich_with_external_features(df, symbol, external_monitor)
         print(f"Using timeframe {used_timeframe} for {symbol} ({bar_count} bars)")
 
         # Build new dataset

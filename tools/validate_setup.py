@@ -6,7 +6,14 @@ Run: python validate_setup.py
 
 import sys
 import os
+import re
+import subprocess
 from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 
 def check_env_file() -> bool:
@@ -36,6 +43,35 @@ def check_env_file() -> bool:
     return True
 
 
+def check_secret_hygiene() -> bool:
+    """Warn when configuration still contains obvious placeholder secrets."""
+    print("  🔐 Checking secret hygiene...")
+
+    env_file = Path(".env")
+    if not env_file.exists():
+        print("    ⚠️  Skipping secret hygiene check (no .env file)")
+        return True
+
+    content = env_file.read_text(encoding="utf-8", errors="ignore")
+    placeholders = [
+        ("ALPACA_API_KEY", r"ALPACA_API_KEY\s*=\s*(your_|test_|changeme|replace_me|)$"),
+        ("ALPACA_API_SECRET", r"ALPACA_API_SECRET\s*=\s*(your_|test_|changeme|replace_me|)$"),
+        ("DISCORD_WEBHOOK_URL", r"DISCORD_WEBHOOK_URL\s*=\s*(your_|test_|changeme|replace_me|)$"),
+    ]
+
+    warned = False
+    for name, pattern in placeholders:
+        if re.search(pattern, content, flags=re.IGNORECASE | re.MULTILINE):
+            print(f"    ⚠️  {name} appears to use a placeholder or test value")
+            warned = True
+
+    if warned:
+        print("    💡 Replace placeholder values before any live deployment")
+    else:
+        print("    ✅ No obvious placeholder secrets found")
+    return True
+
+
 def check_imports() -> bool:
     """Check required packages are installed."""
     print("  📦 Checking dependencies...")
@@ -62,6 +98,13 @@ def check_imports() -> bool:
         print(f"\n  Install missing packages:")
         print(f"    pip install {' '.join(missing)}")
         return False
+
+    # Useful for the new release validation pipeline, but optional if unavailable.
+    try:
+        import sklearn  # noqa: F401
+        print("    ✅ sklearn")
+    except ImportError:
+        print("    ⚠️  sklearn (recommended for RF model)")
     
     return True
 
@@ -74,6 +117,10 @@ def check_files() -> bool:
         "stock_bot.py",
         "stock_config.py",
         "strategy.py",
+        "core/stock_bot.py",
+        "config/stock_config.py",
+        "strategies/strategy.py",
+        ".env.example",
     ]
     
     missing = [f for f in files if not Path(f).exists()]
@@ -92,7 +139,10 @@ def test_alpaca_connection() -> bool:
     print("  🔗 Testing Alpaca connection...")
     
     try:
-        from stock_config import load_stock_config
+        try:
+            from stock_config import load_stock_config
+        except Exception:
+            from config.stock_config import load_stock_config
         
         config = load_stock_config()
         print(f"    ✅ Config loaded")
@@ -130,6 +180,7 @@ def main() -> None:
     
     checks = [
         ("Config", check_env_file),
+        ("Secret hygiene", check_secret_hygiene),
         ("Files", check_files),
         ("Dependencies", check_imports),
         ("Alpaca", test_alpaca_connection),

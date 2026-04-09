@@ -7,7 +7,6 @@ before starting a paper-trading session.
 
 Usage:
   python paper_launch_check.py
-  python paper_launch_check.py --mode crypto
   python paper_launch_check.py --mode stocks
 """
 
@@ -44,11 +43,7 @@ def _module_exists(module_name: str) -> bool:
 
 
 def _mode_from_env(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    if os.getenv("ALPACA_API_KEY"):
-        return "stocks"
-    return "crypto"
+    return "stocks"
 
 
 def check_env_file(mode: str) -> CheckResult:
@@ -57,10 +52,7 @@ def check_env_file(mode: str) -> CheckResult:
         return CheckResult(".env file", False, "Missing .env file")
 
     content = env_path.read_text(encoding="utf-8", errors="ignore")
-    if mode == "crypto":
-        required = ["BINANCE_API_KEY", "BINANCE_API_SECRET"]
-    else:
-        required = ["ALPACA_API_KEY", "ALPACA_API_SECRET"]
+    required = ["ALPACA_API_KEY", "ALPACA_API_SECRET"]
 
     missing = [k for k in required if k not in content]
     if missing:
@@ -70,7 +62,7 @@ def check_env_file(mode: str) -> CheckResult:
 
 def check_dependencies(mode: str) -> CheckResult:
     common = ["pandas", "numpy", "pydantic", "pydantic_settings"]
-    mode_deps = ["ccxt"] if mode == "crypto" else ["alpaca_trade_api"]
+    mode_deps = ["alpaca_trade_api"]
     missing = [m for m in common + mode_deps if not _module_exists(m)]
     if missing:
         return CheckResult("Dependencies", False, f"Missing: {', '.join(missing)}")
@@ -79,8 +71,8 @@ def check_dependencies(mode: str) -> CheckResult:
 
 def check_files(mode: str) -> CheckResult:
     files = ["strategies/strategy.py", "utils/risk.py", "utils/portfolio.py"]
-    files.append("core/bot.py" if mode == "crypto" else "core/stock_bot.py")
-    files.append("config/stock_config.py" if mode == "stocks" else "config.py")
+    files.append("core/stock_bot.py")
+    files.append("config/stock_config.py")
     missing = [f for f in files if not Path(f).exists()]
     if missing:
         return CheckResult("Required files", False, f"Missing: {', '.join(missing)}")
@@ -121,16 +113,10 @@ def check_strategy_smoke() -> CheckResult:
 
 def check_config_load(mode: str) -> CheckResult:
     try:
-        if mode == "crypto":
-            from config import load_config
+        from stock_config import load_stock_config
 
-            cfg = load_config()
-            details = f"symbols={len(cfg.symbols)}, paper={cfg.paper_trading}"
-        else:
-            from stock_config import load_stock_config
-
-            cfg = load_stock_config()
-            details = f"symbols={len(cfg.symbols)}, paper={cfg.paper_trading}"
+        cfg = load_stock_config()
+        details = f"symbols={len(cfg.symbols)}, paper={cfg.paper_trading}"
         return CheckResult("Config load", True, details)
     except Exception as exc:
         return CheckResult("Config load", False, f"Failed: {exc}")
@@ -150,7 +136,7 @@ def run_checks(mode: str) -> List[CheckResult]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Paper-trading preflight checklist")
-    parser.add_argument("--mode", choices=["auto", "crypto", "stocks"], default="auto")
+    parser.add_argument("--mode", choices=["stocks", "auto"], default="stocks")
     args = parser.parse_args()
 
     mode = _mode_from_env(args.mode)

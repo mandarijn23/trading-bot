@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from daily_performance_report import build_report, evaluate_decay
+from daily_performance_report import build_gate_state, build_report, evaluate_decay
 
 
 def test_evaluate_decay_critical_on_large_drop():
@@ -31,3 +31,13 @@ def test_build_report_returns_symbol_sections():
     assert "overall" in report
     assert "symbols" in report
     assert "BTC/USDT" in report["symbols"]
+
+
+def test_build_gate_state_critical_recommends_pause():
+    report = {
+        "decay_level": "CRITICAL",
+        "decay_reason": "edge drop",
+    }
+    gate = build_gate_state(report, max_daily_loss_pct=0.05, trigger_fraction=0.5)
+    assert gate["pause_recommended"] is True
+    assert gate["drawdown_trigger_pct"] == -2.5

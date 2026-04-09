@@ -38,10 +38,9 @@ echo -e "${BLUE}Choose how to run:${NC}"
 echo "  1) Run bot only (stock_bot.py)"
 echo "  2) Run dashboard only (dashboard.py)"  
 echo "  3) Run both (in separate background processes)"
-echo "  4) Run crypto bot (bot.py)"
-echo "  5) Test Discord webhook"
+echo "  4) Test Discord webhook"
 echo ""
-read -p "Enter choice [1-5]: " choice
+read -p "Enter choice [1-4]: " choice
 
 case $choice in
     1)
@@ -102,10 +101,6 @@ case $choice in
         fi
         ;;
     4)
-        echo -e "\n${YELLOW}Starting crypto bot (Binance)...${NC}\n"
-        python bot.py
-        ;;
-    5)
         echo -e "\n${YELLOW}Testing Discord webhook...${NC}\n"
         python cli.py test-discord
         ;;

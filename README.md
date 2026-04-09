@@ -31,6 +31,7 @@ The current operating mode is paper trading first. The code is structured to mak
 - `python trade.py` for the interactive launcher
 - `python cli.py validate-config` to verify configuration
 - `python cli.py preflight` for the paper-trading launch checklist
+- `python cli.py validate-release` for the full release gate
 - `python cli.py daily-report` for a performance and decay summary
 - `python dashboard.py` for the performance dashboard
 - `tools/install_nas_stack.sh` to install and enable the full NAS stack
@@ -50,11 +51,13 @@ cp .env.example .env
 ```
 
 3. Add the required API keys and runtime settings for the workflow you plan to run.
+	Use the stock-only `.env.example` as the baseline; keep optional feed keys empty until you are ready to enable them.
 
 4. Validate the configuration.
 
 ```bash
 python cli.py validate-config
+python cli.py validate-release
 ```
 
 ## Monitoring
@@ -62,7 +65,7 @@ python cli.py validate-config
 Use the dashboard and logs to review live behavior:
 
 - `dashboard.py` for performance and recent trades
-- `bot.log` and `stock_bot.log` for execution logs
+- `stock_bot.log` for execution logs
 - `logs/` for generated reports and run history
 - `cli.py stats` for model and trade analytics
 - `tools/send_performance_graph.py` for the Discord performance graph

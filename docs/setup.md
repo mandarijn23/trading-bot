@@ -25,6 +25,8 @@ cp .env.example .env
 
 Then add the required values for the workflow you plan to run.
 
+The example file is stock-only and already includes the current Phase 2+ gating settings, so you can keep external data disabled until you are ready to test it.
+
 ### Common settings
 
 - `LOG_LEVEL`
@@ -44,6 +46,7 @@ Run the built-in checks before starting a live or paper session.
 ```bash
 python cli.py validate-config
 python cli.py preflight
+python cli.py validate-release
 ```
 
 ## Recommended Startup Order
@@ -52,7 +55,8 @@ python cli.py preflight
 2. Create and fill `.env`.
 3. Run `python cli.py validate-config`.
 4. Run `python cli.py preflight`.
-5. Start the launcher with `python trade.py`.
+5. Run `python cli.py validate-release` before any promotion.
+6. Start the launcher with `python trade.py`.
 
 ## NAS Installation
 
