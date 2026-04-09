@@ -41,6 +41,12 @@ Run the daily report when you want a compact operational summary.
 python cli.py daily-report
 ```
 
+If you want the runtime decay gate written for the bot to consume, run:
+
+```bash
+python daily_performance_report.py --stock-log stock_bot.log --gate-file logs/strategy_gate.json
+```
+
 The NAS daily profile job also sends a performance graph to Discord and records a local PNG in `logs/`.
 
 ## What to Watch
@@ -51,3 +57,5 @@ The NAS daily profile job also sends a performance graph to Discord and records 
 - profit factor
 - repeated signal filtering
 - daily profile changes and graph delivery status
+- model quality gate status
+- external-data availability and degraded-mode alerts

@@ -72,11 +72,10 @@ class RiskManager:
     
     def is_market_hours(self) -> bool:
         """Check if current time is reasonable for trading."""
-        # For crypto, trading is 24/7
-        # For stocks, check market hours (9:30 AM - 4:00 PM EST)
+        # Stock bot: paper mode can run anytime for simulation.
         if hasattr(self.config, 'paper_trading') and self.config.paper_trading:
             return True  # Allow trading anytime in paper trading
-        return True  # 24/7 for crypto
+        return True
     
     def update_daily_stats(self, portfolio: Portfolio, won: bool) -> None:
         """Update daily win/loss statistics."""

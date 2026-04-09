@@ -110,6 +110,17 @@ class FeatureExtractor:
         
         # 12. Higher high / Lower low (trend confirmation)
         higher_high = 1.0 if high[-1] > np.max(high[-5:-1]) else 0.0
+
+        # 13-16. External signals (neutral defaults when unavailable).
+        ext_sentiment = float(df["external_sentiment"].iloc[-1]) if "external_sentiment" in df.columns else 0.0
+        ext_catalyst = float(df["external_catalyst"].iloc[-1]) if "external_catalyst" in df.columns else 0.0
+        ext_event_risk = float(df["external_event_risk"].iloc[-1]) if "external_event_risk" in df.columns else 0.0
+        ext_confidence = float(df["external_confidence"].iloc[-1]) if "external_confidence" in df.columns else 0.0
+
+        ext_sentiment = float(np.clip(ext_sentiment, -1.0, 1.0))
+        ext_catalyst = float(np.clip(ext_catalyst, 0.0, 1.0))
+        ext_event_risk = float(np.clip(ext_event_risk, 0.0, 1.0))
+        ext_confidence = float(np.clip(ext_confidence, 0.0, 1.0))
         
         features = np.array([
             price_change_pct,      # 0
@@ -124,6 +135,10 @@ class FeatureExtractor:
             time_of_day,           # 9
             volume_trend,          # 10
             higher_high,           # 11
+            ext_sentiment,         # 12
+            ext_catalyst,          # 13
+            ext_event_risk,        # 14
+            ext_confidence,        # 15
         ])
         
         return features.reshape(1, -1)
