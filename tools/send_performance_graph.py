@@ -45,6 +45,21 @@ def _parse_pnl_pct(value) -> float | None:
         return None
 
 
+def _parse_float(value) -> float | None:
+    if pd.isna(value):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("$", "").replace(",", "")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def load_closed_trades(csv_path: Path) -> pd.DataFrame:
     if not csv_path.exists():
         return pd.DataFrame()
@@ -61,16 +76,35 @@ def load_closed_trades(csv_path: Path) -> pd.DataFrame:
             pnl_source = col
             break
 
-    if pnl_source is None:
-        return pd.DataFrame()
-
-    df["pnl_pct_num"] = df[pnl_source].apply(_parse_pnl_pct)
+    if pnl_source is not None:
+        df["pnl_pct_num"] = df[pnl_source].apply(_parse_pnl_pct)
+    else:
+        df["pnl_pct_num"] = None
 
     # Backfill missing pnl% from entry/exit prices when available.
-    if {"entry_price", "exit_price"}.issubset(df.columns):
-        entry = pd.to_numeric(df["entry_price"], errors="coerce")
-        exit_ = pd.to_numeric(df["exit_price"], errors="coerce")
+    entry_col = "entry_price" if "entry_price" in df.columns else None
+    if entry_col is None and "price" in df.columns:
+        entry_col = "price"
+    exit_col = "exit_price" if "exit_price" in df.columns else None
+
+    if entry_col is not None and exit_col is not None:
+        entry = df[entry_col].apply(_parse_float)
+        exit_ = df[exit_col].apply(_parse_float)
         computed = ((exit_ - entry) / entry) * 100.0
+        missing = df["pnl_pct_num"].isna()
+        df.loc[missing, "pnl_pct_num"] = computed[missing]
+
+    # Final fallback: compute pnl% from pnl_usd / (entry_price * qty).
+    qty_col = "qty" if "qty" in df.columns else ("quantity" if "quantity" in df.columns else None)
+    usd_col = "pnl_usd" if "pnl_usd" in df.columns else None
+    if usd_col is None and "pnl" in df.columns:
+        usd_col = "pnl"
+    if entry_col is not None and qty_col is not None and usd_col is not None:
+        entry = df[entry_col].apply(_parse_float)
+        qty = df[qty_col].apply(_parse_float)
+        pnl_usd = df[usd_col].apply(_parse_float)
+        denom = entry * qty
+        computed = (pnl_usd / denom) * 100.0
         missing = df["pnl_pct_num"].isna()
         df.loc[missing, "pnl_pct_num"] = computed[missing]
 
@@ -138,6 +172,26 @@ def summarize_recent_history(df: pd.DataFrame, max_points: int = 180) -> pd.Data
     points["cum_pnl"] = points["pnl_pct_num"].cumsum()
     points["label"] = points["timestamp"].dt.strftime("%m-%d %H:%M")
     return points
+
+
+def ensure_min_line_points(points: pd.DataFrame, min_points: int = 2) -> pd.DataFrame:
+    """Ensure chart has enough points to draw a visible line.
+
+    When only one closed trade exists, add a baseline point right before it.
+    """
+    if points.empty or len(points) >= min_points:
+        return points
+
+    first = points.iloc[0]
+    baseline_ts = first["timestamp"] - timedelta(hours=1)
+    baseline = {
+        "timestamp": baseline_ts,
+        "pnl_pct_num": 0.0,
+        "cum_pnl": 0.0,
+        "label": baseline_ts.strftime("%m-%d %H:%M"),
+    }
+    combined = pd.concat([pd.DataFrame([baseline]), points], ignore_index=True)
+    return combined.sort_values("timestamp").reset_index(drop=True)
 
 
 def empty_daily_window(days: int) -> pd.DataFrame:
@@ -345,6 +399,9 @@ def main() -> int:
             "No closed trades in selected day window; "
             "using recent historical closed trades for chart detail."
         )
+
+    if not trade_points.empty:
+        trade_points = ensure_min_line_points(trade_points)
 
     if trade_points.empty:
         # Fallback to a no-trade preview curve when there are no closed trades yet.
