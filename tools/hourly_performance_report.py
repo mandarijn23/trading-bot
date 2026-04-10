@@ -649,6 +649,10 @@ def generate_quickchart_money_earned(df: pd.DataFrame) -> str:
     
     if sell_df.empty:
         return ""
+
+    required_cols = {"pnl_pct_num", "price", "quantity", "symbol"}
+    if not required_cols.issubset(set(sell_df.columns)):
+        return ""
     
     sell_df = sell_df.dropna(subset=["pnl_pct_num", "price", "quantity"]).copy()
     
