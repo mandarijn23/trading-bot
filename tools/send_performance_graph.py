@@ -174,38 +174,36 @@ def summarize_recent_history(df: pd.DataFrame, max_points: int = 180) -> pd.Data
     return points
 
 
-def build_dense_daily_points(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """Create a dense day-by-day series from real data for better sparse-chart readability."""
-    if df.empty:
-        return pd.DataFrame(columns=["timestamp", "pnl_pct_num", "cum_pnl", "label"])
+def build_compact_sparse_points(points: pd.DataFrame) -> pd.DataFrame:
+    """Build readable line points when closed-trade count is very low.
 
-    today = datetime.now(UTC).date()
-    count = max(1, days)
-    start_date = today - timedelta(days=count - 1)
-    window_dates = [start_date + timedelta(days=i) for i in range(count)]
+    With 1-3 real trades, day-based windows can look empty/flat. This keeps the
+    chart focused around actual events so the line remains readable.
+    """
+    if points.empty:
+        return points
 
-    day_map = (
-        df[df["date"] >= start_date]
-        .groupby("date")["pnl_pct_num"]
-        .sum()
-        .to_dict()
-    )
+    sparse = points.sort_values("timestamp").reset_index(drop=True).copy()
 
-    rows = []
-    running = 0.0
-    for d in window_dates:
-        pnl = float(day_map.get(d, 0.0))
-        running += pnl
-        ts = pd.Timestamp(d)
-        rows.append(
-            {
-                "timestamp": ts,
-                "pnl_pct_num": pnl,
-                "cum_pnl": running,
-                "label": str(d),
-            }
-        )
-    return pd.DataFrame(rows)
+    # Insert a short baseline right before the first trade event.
+    first_ts = pd.to_datetime(sparse["timestamp"].iloc[0])
+    baseline = [
+        {
+            "timestamp": first_ts - timedelta(minutes=30),
+            "pnl_pct_num": 0.0,
+            "cum_pnl": 0.0,
+        },
+        {
+            "timestamp": first_ts - timedelta(minutes=10),
+            "pnl_pct_num": 0.0,
+            "cum_pnl": 0.0,
+        },
+    ]
+
+    sparse = pd.concat([pd.DataFrame(baseline), sparse], ignore_index=True)
+    sparse = sparse.sort_values("timestamp").reset_index(drop=True)
+    sparse["label"] = sparse["timestamp"].dt.strftime("%m-%d %H:%M")
+    return sparse
 
 
 def empty_daily_window(days: int) -> pd.DataFrame:
@@ -416,10 +414,8 @@ def main() -> int:
 
     actual_points = trade_points.copy()
     if has_closed_trades and len(actual_points) < 4:
-        dense_points = build_dense_daily_points(df, window_days)
-        if not dense_points.empty:
-            trade_points = dense_points
-            print("Sparse trade history detected; using dense daily points for clearer line charts.")
+        trade_points = build_compact_sparse_points(actual_points)
+        print("Sparse trade history detected; using compact event-focused points for clearer line charts.")
 
     if trade_points.empty:
         # Fallback to a no-trade preview curve when there are no closed trades yet.
@@ -453,7 +449,11 @@ def main() -> int:
                 "Window": f"{window_days} day(s)",
                 "Closed Trades": total_trades,
                 "Cumulative PnL": f"{total_pnl:+.2f}%",
-                "Data Status": "closed trades" if has_closed_trades else "no closed trades yet (preview curve)",
+                "Data Status": (
+                    "closed trades (sparse sample)"
+                    if has_closed_trades and len(actual_points) < 4
+                    else ("closed trades" if has_closed_trades else "no closed trades yet (preview curve)")
+                ),
                 "Cycle": f"day {cycle_day} ({profile})",
                 "Last Day": last_day,
                 "Generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
