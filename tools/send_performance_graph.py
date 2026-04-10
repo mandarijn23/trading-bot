@@ -323,6 +323,13 @@ def send_extra_line_charts(points: pd.DataFrame) -> None:
         peak = max(peak, v)
         running_max.append(peak)
     drawdown = [v - p for v, p in zip(cum_pnl, running_max)]
+    drawdown_span = (max(drawdown) - min(drawdown)) if drawdown else 0.0
+
+    pnl_delta = []
+    prev = 0.0
+    for v in cum_pnl:
+        pnl_delta.append(v - prev)
+        prev = v
 
     window = 5
     win_rate = []
@@ -335,8 +342,14 @@ def send_extra_line_charts(points: pd.DataFrame) -> None:
     charts = [
         ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)"),
         ("Win Rate Trend %", win_rate, "#C084FC", "rgba(192,132,252,0.18)"),
-        ("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)"),
     ]
+
+    # Drawdown can be a flat zero line in sparse all-winning samples; show a more
+    # informative delta line in that case.
+    if abs(drawdown_span) < 1e-9:
+        charts.append(("PnL Delta %", pnl_delta, "#FF8C42", "rgba(255,140,66,0.18)"))
+    else:
+        charts.append(("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)"))
 
     for title, data, line, fill in charts:
         discord.send_chart(title=title, chart_url=_line_chart_url(title, labels, data, line, fill), color=3447003)
