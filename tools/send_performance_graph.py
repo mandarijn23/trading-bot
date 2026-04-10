@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from datetime import UTC
 from datetime import datetime
@@ -240,106 +239,12 @@ def load_profile_state(state_file: Path) -> tuple[str, str]:
     return cycle_day, profile
 
 
-def send_multi_chart_report(csv_path: Path) -> bool:
-    """Trigger the richer multi-chart Discord report workflow."""
-    cmd = [
-        sys.executable,
-        str(ROOT_DIR / "tools" / "hourly_performance_report.py"),
-        "--csv",
-        str(csv_path.resolve()),
-        "--logs",
-        str((ROOT_DIR / "logs").resolve()),
-    ]
-    result = subprocess.run(
-        cmd,
-        cwd=str(ROOT_DIR),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if result.stdout.strip():
-        print(result.stdout.strip())
-    if result.stderr.strip():
-        print(result.stderr.strip())
-
-    if result.returncode != 0 and "No trades found in CSV" in result.stdout:
-        print("No trades available for rich report; sending placeholder multi-chart pack.")
-        return send_placeholder_multi_charts()
-
-    return result.returncode == 0
-
-
-def _quickchart_url(chart: dict) -> str:
-    chart_json = json.dumps(chart, separators=(",", ":"))
-    return f"https://quickchart.io/chart?w=1280&h=720&devicePixelRatio=2&backgroundColor=%23121720&c={quote(chart_json)}"
-
-
-def send_placeholder_multi_charts() -> bool:
-    labels = [str(i) for i in range(10)]
-    cumul = [0.2, 0.4, 0.35, 0.7, 0.95, 0.9, 1.2, 1.45, 1.35, 1.7]
-    win_rate = [52, 58, 55, 63, 68, 64, 72, 76, 71, 79]
-    momentum = [0.1, 0.3, 0.25, 0.5, 0.45, 0.6, 0.75, 0.7, 0.85, 0.95]
-    drawdown = [0, -0.1, -0.05, -0.2, -0.12, -0.08, -0.18, -0.1, -0.14, -0.06]
-    activity = [2, 3, 2, 4, 5, 4, 6, 5, 7, 6]
-    efficiency = [48, 51, 50, 55, 57, 56, 60, 63, 62, 66]
-
-    def line_cfg(label: str, data: list[float], line: str, fill: str) -> dict:
-        return {
-            "type": "line",
-            "data": {
-                "labels": labels,
-                "datasets": [
-                    {
-                        "label": label,
-                        "data": data,
-                        "borderColor": line,
-                        "backgroundColor": fill,
-                        "fill": True,
-                        "lineTension": 0.25,
-                        "borderWidth": 2,
-                        "pointRadius": 2,
-                        "pointHoverRadius": 4,
-                    }
-                ],
-            },
-            "options": {
-                "legend": {"display": True, "labels": {"fontColor": "#B9C3D1"}},
-                "scales": {
-                    "xAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
-                    "yAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
-                },
-            },
-        }
-
-    chart_specs = [
-        ("Cumulative PnL Curve", line_cfg("Cumulative PnL %", cumul, "#00FF3B", "rgba(0,255,59,0.18)")),
-        ("Win Rate Trend", line_cfg("Win Rate %", win_rate, "#34A9FF", "rgba(52,169,255,0.18)")),
-        ("Trade Momentum", line_cfg("Momentum", momentum, "#F9C74F", "rgba(249,199,79,0.18)")),
-        ("Max Drawdown", line_cfg("Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)")),
-        ("Trading Activity", line_cfg("Activity Score", activity, "#2DD4BF", "rgba(45,212,191,0.18)")),
-        ("Execution Efficiency", line_cfg("Efficiency %", efficiency, "#C084FC", "rgba(192,132,252,0.18)")),
-    ]
-
-    for title, cfg in chart_specs:
-        sent = discord.send_chart(title=title, chart_url=_quickchart_url(cfg), color=3447003)
-        if not sent:
-            return False
-
-    return True
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate and send multi-day performance graph")
     parser.add_argument("--csv", default="trades_history.csv", help="Path to trades csv")
     parser.add_argument("--days", type=int, default=14, help="Number of recent days to include")
     parser.add_argument("--output", default="logs/performance_graph.png", help="Output chart image path")
     parser.add_argument("--no-discord", action="store_true", help="Do not send to Discord")
-    parser.add_argument(
-        "--no-multi-charts",
-        action="store_true",
-        help="Only send the single cumulative graph and skip multi-chart report",
-    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv)
@@ -399,10 +304,6 @@ def main() -> int:
             filename=output_path.name,
         )
         print(f"Discord graph sent: {sent}")
-
-        if not args.no_multi_charts:
-            multi_sent = send_multi_chart_report(csv_path)
-            print(f"Discord multi-chart report sent: {multi_sent}")
     else:
         print("Discord disabled; graph generated locally only.")
 
