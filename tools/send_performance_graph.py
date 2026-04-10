@@ -320,72 +320,68 @@ def _line_chart_url(
     return f"https://quickchart.io/chart?w=1280&h=720&devicePixelRatio=2&backgroundColor=%23121720&c={quote(payload)}"
 
 
-def send_extra_line_charts(points: pd.DataFrame) -> None:
+def send_extra_line_charts(points: pd.DataFrame, window_days: int) -> None:
     metric_points = points.sort_values("timestamp").reset_index(drop=True).copy()
+    if metric_points.empty:
+        return
 
-    # Ensure at least two points so line charts render clearly.
-    if len(metric_points) == 1:
-        first_ts = pd.to_datetime(metric_points["timestamp"].iloc[0])
-        baseline = pd.DataFrame(
-            [
-                {
-                    "timestamp": first_ts - timedelta(hours=1),
-                    "pnl_pct_num": 0.0,
-                    "cum_pnl": 0.0,
-                    "label": (first_ts - timedelta(hours=1)).strftime("%m-%d %H:%M"),
-                }
-            ]
+    # Sparse mode: derive daily metrics across the full window so charts are readable
+    # and not all the same straight sparse-event line.
+    if len(metric_points) < 4:
+        today = datetime.now(UTC).date()
+        start_date = today - timedelta(days=max(1, window_days) - 1)
+        dates = [start_date + timedelta(days=i) for i in range(max(1, window_days))]
+
+        day_sum = metric_points.groupby(metric_points["timestamp"].dt.date)["pnl_pct_num"].sum().to_dict()
+        day_count = metric_points.groupby(metric_points["timestamp"].dt.date)["pnl_pct_num"].count().to_dict()
+        day_wins = metric_points[metric_points["pnl_pct_num"] > 0].groupby(metric_points["timestamp"].dt.date)["pnl_pct_num"].count().to_dict()
+
+        labels = [str(d) for d in dates]
+        trade_pnl = [float(day_sum.get(d, 0.0)) for d in dates]
+
+        cum_trades = 0
+        cum_wins = 0
+        win_rate = []
+        for d in dates:
+            cum_trades += int(day_count.get(d, 0))
+            cum_wins += int(day_wins.get(d, 0))
+            win_rate.append((cum_wins / cum_trades * 100.0) if cum_trades > 0 else 0.0)
+
+        volatility = (
+            pd.Series(trade_pnl)
+            .rolling(window=min(5, len(trade_pnl)), min_periods=1)
+            .std(ddof=0)
+            .fillna(0.0)
+            .astype(float)
+            .tolist()
         )
-        metric_points = pd.concat([baseline, metric_points], ignore_index=True)
-        metric_points = metric_points.sort_values("timestamp").reset_index(drop=True)
-
-    labels = metric_points["timestamp"].dt.strftime("%m-%d %H:%M").tolist()
-    trade_pnl = metric_points["pnl_pct_num"].astype(float).tolist()
-
-    if "cum_pnl" in metric_points.columns and metric_points["cum_pnl"].notna().any():
-        cum_pnl = metric_points["cum_pnl"].astype(float).tolist()
     else:
-        cum_pnl = pd.Series(trade_pnl).cumsum().tolist()
+        labels = metric_points["timestamp"].dt.strftime("%m-%d %H:%M").tolist()
+        trade_pnl = metric_points["pnl_pct_num"].astype(float).tolist()
 
-    running_max = []
-    peak = float("-inf")
-    for v in cum_pnl:
-        peak = max(peak, v)
-        running_max.append(peak)
-    drawdown = [v - p for v, p in zip(cum_pnl, running_max)]
-    drawdown_span = (max(drawdown) - min(drawdown)) if drawdown else 0.0
+        win_rate = []
+        window = 5
+        for i in range(len(trade_pnl)):
+            start = max(0, i - window + 1)
+            segment = trade_pnl[start : i + 1]
+            wins = sum(1 for x in segment if x > 0)
+            win_rate.append((wins / len(segment) * 100.0) if segment else 0.0)
 
-    pnl_delta = []
-    prev = 0.0
-    for v in cum_pnl:
-        pnl_delta.append(v - prev)
-        prev = v
+        volatility = (
+            pd.Series(trade_pnl)
+            .rolling(window=min(5, len(trade_pnl)), min_periods=1)
+            .std(ddof=0)
+            .fillna(0.0)
+            .astype(float)
+            .tolist()
+        )
 
-    win_rate = []
-    window = 5
-    for i in range(len(trade_pnl)):
-        start = max(0, i - window + 1)
-        segment = trade_pnl[start : i + 1]
-        wins = sum(1 for x in segment if x > 0)
-        win_rate.append((wins / len(segment) * 100.0) if segment else 0.0)
-
-    # Rolling volatility provides a different shape than drawdown in all-win streaks.
-    vol = pd.Series(trade_pnl).rolling(window=min(5, len(trade_pnl)), min_periods=1).std(ddof=0).fillna(0.0)
-    volatility = vol.astype(float).tolist()
-
+    # Keep exactly 3 extra charts (with main chart = total 4).
     charts = [
-        ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)", 0.15, False),
+        ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)", 0.12, False),
         ("Win Rate Trend %", win_rate, "#C084FC", "rgba(192,132,252,0.18)", 0.0, True),
+        ("Volatility %", volatility, "#FF8C42", "rgba(255,140,66,0.18)", 0.15, False),
     ]
-
-    # Drawdown can be a flat zero line in sparse all-winning samples; show a more
-    # informative delta line in that case.
-    if abs(drawdown_span) < 1e-9:
-        charts.append(("Volatility %", volatility, "#FF8C42", "rgba(255,140,66,0.18)", 0.2, False))
-    else:
-        charts.append(("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)", 0.0, False))
-
-    charts.append(("PnL Delta %", pnl_delta, "#2DD4BF", "rgba(45,212,191,0.18)", 0.15, False))
 
     for title, data, line, fill, tension, stepped in charts:
         discord.send_chart(
@@ -517,7 +513,7 @@ def main() -> int:
         print(f"Discord graph sent: {sent}")
         # Send 3 additional line charts: total = 4 line charts.
         metric_source = actual_points if has_closed_trades else trade_points
-        send_extra_line_charts(metric_source)
+        send_extra_line_charts(metric_source, window_days)
     else:
         print("Discord disabled; graph generated locally only.")
 
