@@ -174,24 +174,38 @@ def summarize_recent_history(df: pd.DataFrame, max_points: int = 180) -> pd.Data
     return points
 
 
-def ensure_min_line_points(points: pd.DataFrame, min_points: int = 2) -> pd.DataFrame:
-    """Ensure chart has enough points to draw a visible line.
+def build_dense_daily_points(df: pd.DataFrame, days: int) -> pd.DataFrame:
+    """Create a dense day-by-day series from real data for better sparse-chart readability."""
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "pnl_pct_num", "cum_pnl", "label"])
 
-    When only one closed trade exists, add a baseline point right before it.
-    """
-    if points.empty or len(points) >= min_points:
-        return points
+    today = datetime.now(UTC).date()
+    count = max(1, days)
+    start_date = today - timedelta(days=count - 1)
+    window_dates = [start_date + timedelta(days=i) for i in range(count)]
 
-    first = points.iloc[0]
-    baseline_ts = first["timestamp"] - timedelta(hours=1)
-    baseline = {
-        "timestamp": baseline_ts,
-        "pnl_pct_num": 0.0,
-        "cum_pnl": 0.0,
-        "label": baseline_ts.strftime("%m-%d %H:%M"),
-    }
-    combined = pd.concat([pd.DataFrame([baseline]), points], ignore_index=True)
-    return combined.sort_values("timestamp").reset_index(drop=True)
+    day_map = (
+        df[df["date"] >= start_date]
+        .groupby("date")["pnl_pct_num"]
+        .sum()
+        .to_dict()
+    )
+
+    rows = []
+    running = 0.0
+    for d in window_dates:
+        pnl = float(day_map.get(d, 0.0))
+        running += pnl
+        ts = pd.Timestamp(d)
+        rows.append(
+            {
+                "timestamp": ts,
+                "pnl_pct_num": pnl,
+                "cum_pnl": running,
+                "label": str(d),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def empty_daily_window(days: int) -> pd.DataFrame:
@@ -400,8 +414,12 @@ def main() -> int:
             "using recent historical closed trades for chart detail."
         )
 
-    if not trade_points.empty:
-        trade_points = ensure_min_line_points(trade_points)
+    actual_points = trade_points.copy()
+    if has_closed_trades and len(actual_points) < 4:
+        dense_points = build_dense_daily_points(df, window_days)
+        if not dense_points.empty:
+            trade_points = dense_points
+            print("Sparse trade history detected; using dense daily points for clearer line charts.")
 
     if trade_points.empty:
         # Fallback to a no-trade preview curve when there are no closed trades yet.
@@ -419,9 +437,9 @@ def main() -> int:
     render_chart_png(build_chart_config(trade_points), output_path)
     print(f"Saved graph: {output_path}")
 
-    total_trades = len(trade_points) if has_closed_trades else 0
-    total_pnl = float(trade_points["pnl_pct_num"].sum())
-    last_day = str(trade_points["timestamp"].iloc[-1].date())
+    total_trades = len(actual_points) if has_closed_trades else 0
+    total_pnl = float(actual_points["pnl_pct_num"].sum()) if has_closed_trades else 0.0
+    last_day = str(actual_points["timestamp"].iloc[-1].date()) if has_closed_trades else str(trade_points["timestamp"].iloc[-1].date())
     cycle_day, profile = load_profile_state(Path("logs/profile_cycle_state.env"))
 
     if not args.no_discord:
