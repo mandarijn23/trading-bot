@@ -193,6 +193,69 @@ def build_chart_config(points: pd.DataFrame) -> dict:
     }
 
 
+def _line_chart_url(title: str, labels: list[str], data: list[float], line_color: str, fill_color: str) -> str:
+    chart = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": title,
+                    "data": [round(float(v), 3) for v in data],
+                    "borderColor": line_color,
+                    "backgroundColor": fill_color,
+                    "fill": True,
+                    "lineTension": 0.25,
+                    "borderWidth": 2,
+                    "pointRadius": 2,
+                    "pointHoverRadius": 4,
+                    "steppedLine": False,
+                }
+            ],
+        },
+        "options": {
+            "title": {"display": True, "text": title, "fontColor": "#DCE4EE", "fontSize": 16},
+            "legend": {"display": True, "labels": {"fontColor": "#B9C3D1"}},
+            "scales": {
+                "xAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
+                "yAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
+            },
+        },
+    }
+    payload = json.dumps(chart, separators=(",", ":"))
+    return f"https://quickchart.io/chart?w=1280&h=720&devicePixelRatio=2&backgroundColor=%23121720&c={quote(payload)}"
+
+
+def send_extra_line_charts(points: pd.DataFrame) -> None:
+    labels = points["label"].tolist()
+    trade_pnl = points["pnl_pct_num"].astype(float).tolist()
+    cum_pnl = points["cum_pnl"].astype(float).tolist()
+
+    running_max = []
+    peak = float("-inf")
+    for v in cum_pnl:
+        peak = max(peak, v)
+        running_max.append(peak)
+    drawdown = [v - p for v, p in zip(cum_pnl, running_max)]
+
+    window = 5
+    win_rate = []
+    for i in range(len(trade_pnl)):
+        start = max(0, i - window + 1)
+        segment = trade_pnl[start : i + 1]
+        wins = sum(1 for x in segment if x > 0)
+        win_rate.append((wins / len(segment) * 100.0) if segment else 0.0)
+
+    charts = [
+        ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)"),
+        ("Win Rate Trend %", win_rate, "#C084FC", "rgba(192,132,252,0.18)"),
+        ("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)"),
+    ]
+
+    for title, data, line, fill in charts:
+        discord.send_chart(title=title, chart_url=_line_chart_url(title, labels, data, line, fill), color=3447003)
+
+
 def render_chart_png(chart_config: dict, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -304,6 +367,8 @@ def main() -> int:
             filename=output_path.name,
         )
         print(f"Discord graph sent: {sent}")
+        # Send 3 additional line charts: total = 4 line charts.
+        send_extra_line_charts(trade_points)
     else:
         print("Discord disabled; graph generated locally only.")
 
