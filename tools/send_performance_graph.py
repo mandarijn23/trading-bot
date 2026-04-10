@@ -279,7 +279,15 @@ def build_chart_config(points: pd.DataFrame) -> dict:
     }
 
 
-def _line_chart_url(title: str, labels: list[str], data: list[float], line_color: str, fill_color: str) -> str:
+def _line_chart_url(
+    title: str,
+    labels: list[str],
+    data: list[float],
+    line_color: str,
+    fill_color: str,
+    line_tension: float = 0.15,
+    stepped_line: bool = False,
+) -> str:
     chart = {
         "type": "line",
         "data": {
@@ -291,11 +299,11 @@ def _line_chart_url(title: str, labels: list[str], data: list[float], line_color
                     "borderColor": line_color,
                     "backgroundColor": fill_color,
                     "fill": True,
-                    "lineTension": 0.25,
+                    "lineTension": line_tension,
                     "borderWidth": 2,
                     "pointRadius": 2,
                     "pointHoverRadius": 4,
-                    "steppedLine": False,
+                    "steppedLine": stepped_line,
                 }
             ],
         },
@@ -313,9 +321,31 @@ def _line_chart_url(title: str, labels: list[str], data: list[float], line_color
 
 
 def send_extra_line_charts(points: pd.DataFrame) -> None:
-    labels = points["label"].tolist()
-    trade_pnl = points["pnl_pct_num"].astype(float).tolist()
-    cum_pnl = points["cum_pnl"].astype(float).tolist()
+    metric_points = points.sort_values("timestamp").reset_index(drop=True).copy()
+
+    # Ensure at least two points so line charts render clearly.
+    if len(metric_points) == 1:
+        first_ts = pd.to_datetime(metric_points["timestamp"].iloc[0])
+        baseline = pd.DataFrame(
+            [
+                {
+                    "timestamp": first_ts - timedelta(hours=1),
+                    "pnl_pct_num": 0.0,
+                    "cum_pnl": 0.0,
+                    "label": (first_ts - timedelta(hours=1)).strftime("%m-%d %H:%M"),
+                }
+            ]
+        )
+        metric_points = pd.concat([baseline, metric_points], ignore_index=True)
+        metric_points = metric_points.sort_values("timestamp").reset_index(drop=True)
+
+    labels = metric_points["timestamp"].dt.strftime("%m-%d %H:%M").tolist()
+    trade_pnl = metric_points["pnl_pct_num"].astype(float).tolist()
+
+    if "cum_pnl" in metric_points.columns and metric_points["cum_pnl"].notna().any():
+        cum_pnl = metric_points["cum_pnl"].astype(float).tolist()
+    else:
+        cum_pnl = pd.Series(trade_pnl).cumsum().tolist()
 
     running_max = []
     peak = float("-inf")
@@ -331,28 +361,38 @@ def send_extra_line_charts(points: pd.DataFrame) -> None:
         pnl_delta.append(v - prev)
         prev = v
 
-    window = 5
     win_rate = []
+    window = 5
     for i in range(len(trade_pnl)):
         start = max(0, i - window + 1)
         segment = trade_pnl[start : i + 1]
         wins = sum(1 for x in segment if x > 0)
         win_rate.append((wins / len(segment) * 100.0) if segment else 0.0)
 
+    # Rolling volatility provides a different shape than drawdown in all-win streaks.
+    vol = pd.Series(trade_pnl).rolling(window=min(5, len(trade_pnl)), min_periods=1).std(ddof=0).fillna(0.0)
+    volatility = vol.astype(float).tolist()
+
     charts = [
-        ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)"),
-        ("Win Rate Trend %", win_rate, "#C084FC", "rgba(192,132,252,0.18)"),
+        ("Trade PnL %", trade_pnl, "#34A9FF", "rgba(52,169,255,0.18)", 0.15, False),
+        ("Win Rate Trend %", win_rate, "#C084FC", "rgba(192,132,252,0.18)", 0.0, True),
     ]
 
     # Drawdown can be a flat zero line in sparse all-winning samples; show a more
     # informative delta line in that case.
     if abs(drawdown_span) < 1e-9:
-        charts.append(("PnL Delta %", pnl_delta, "#FF8C42", "rgba(255,140,66,0.18)"))
+        charts.append(("Volatility %", volatility, "#FF8C42", "rgba(255,140,66,0.18)", 0.2, False))
     else:
-        charts.append(("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)"))
+        charts.append(("Max Drawdown %", drawdown, "#FF6B6B", "rgba(255,107,107,0.18)", 0.0, False))
 
-    for title, data, line, fill in charts:
-        discord.send_chart(title=title, chart_url=_line_chart_url(title, labels, data, line, fill), color=3447003)
+    charts.append(("PnL Delta %", pnl_delta, "#2DD4BF", "rgba(45,212,191,0.18)", 0.15, False))
+
+    for title, data, line, fill, tension, stepped in charts:
+        discord.send_chart(
+            title=title,
+            chart_url=_line_chart_url(title, labels, data, line, fill, line_tension=tension, stepped_line=stepped),
+            color=3447003,
+        )
 
 
 def render_chart_png(chart_config: dict, output_path: Path) -> None:
@@ -476,7 +516,8 @@ def main() -> int:
         )
         print(f"Discord graph sent: {sent}")
         # Send 3 additional line charts: total = 4 line charts.
-        send_extra_line_charts(trade_points)
+        metric_source = actual_points if has_closed_trades else trade_points
+        send_extra_line_charts(metric_source)
     else:
         print("Discord disabled; graph generated locally only.")
 
