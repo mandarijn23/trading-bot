@@ -226,6 +226,15 @@ def empty_daily_window(days: int) -> pd.DataFrame:
 def build_chart_config(points: pd.DataFrame) -> dict:
     labels = points["label"].tolist()
     cum_pnl = [round(float(v), 3) for v in points["cum_pnl"].tolist()]
+    if cum_pnl:
+        y_min = min(cum_pnl)
+        y_max = max(cum_pnl)
+    else:
+        y_min, y_max = 0.0, 1.0
+    span = y_max - y_min
+    pad = max(0.1, span * 0.12)
+    y_tick_min = round(y_min - pad, 3)
+    y_tick_max = round(y_max + pad, 3)
 
     return {
         "type": "line",
@@ -236,12 +245,12 @@ def build_chart_config(points: pd.DataFrame) -> dict:
                     "label": "Cumulative PnL %",
                     "data": cum_pnl,
                     "borderColor": "#00FF3B",
-                    "backgroundColor": "rgba(0,255,59,0.18)",
+                    "backgroundColor": "rgba(0,255,59,0.12)",
                     "fill": True,
-                    "lineTension": 0.25,
-                    "borderWidth": 2,
-                    "pointRadius": 2,
-                    "pointHoverRadius": 4,
+                    "lineTension": 0.18,
+                    "borderWidth": 2.4,
+                    "pointRadius": 1.6,
+                    "pointHoverRadius": 3.2,
                     "steppedLine": False,
                 },
             ],
@@ -262,7 +271,7 @@ def build_chart_config(points: pd.DataFrame) -> dict:
                     {
                         "ticks": {
                             "autoSkip": True,
-                            "maxTicksLimit": 12,
+                            "maxTicksLimit": 8,
                             "fontColor": "#9FAABA",
                         },
                         "gridLines": {"color": "rgba(255,255,255,0.06)"},
@@ -270,7 +279,7 @@ def build_chart_config(points: pd.DataFrame) -> dict:
                 ],
                 "yAxes": [
                     {
-                        "ticks": {"fontColor": "#9FAABA"},
+                        "ticks": {"fontColor": "#9FAABA", "min": y_tick_min, "max": y_tick_max},
                         "gridLines": {"color": "rgba(255,255,255,0.06)"},
                     }
                 ],
@@ -288,6 +297,14 @@ def _line_chart_url(
     line_tension: float = 0.15,
     stepped_line: bool = False,
 ) -> str:
+    clean = [float(v) for v in data] if data else [0.0]
+    y_min = min(clean)
+    y_max = max(clean)
+    span = y_max - y_min
+    pad = max(0.1, span * 0.12)
+    tick_min = round(y_min - pad, 3)
+    tick_max = round(y_max + pad, 3)
+
     chart = {
         "type": "line",
         "data": {
@@ -295,14 +312,14 @@ def _line_chart_url(
             "datasets": [
                 {
                     "label": title,
-                    "data": [round(float(v), 3) for v in data],
+                    "data": [round(float(v), 3) for v in clean],
                     "borderColor": line_color,
                     "backgroundColor": fill_color,
                     "fill": True,
                     "lineTension": line_tension,
-                    "borderWidth": 2,
-                    "pointRadius": 2,
-                    "pointHoverRadius": 4,
+                    "borderWidth": 2.2,
+                    "pointRadius": 1.5,
+                    "pointHoverRadius": 3,
                     "steppedLine": stepped_line,
                 }
             ],
@@ -311,8 +328,8 @@ def _line_chart_url(
             "title": {"display": True, "text": title, "fontColor": "#DCE4EE", "fontSize": 16},
             "legend": {"display": True, "labels": {"fontColor": "#B9C3D1"}},
             "scales": {
-                "xAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
-                "yAxes": [{"ticks": {"fontColor": "#9FAABA"}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
+                "xAxes": [{"ticks": {"fontColor": "#9FAABA", "autoSkip": True, "maxTicksLimit": 8}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
+                "yAxes": [{"ticks": {"fontColor": "#9FAABA", "min": tick_min, "max": tick_max}, "gridLines": {"color": "rgba(255,255,255,0.06)"}}],
             },
         },
     }
