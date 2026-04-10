@@ -50,18 +50,38 @@ def load_closed_trades(csv_path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(csv_path)
-    if "timestamp" not in df.columns or "side" not in df.columns:
+    if "timestamp" not in df.columns:
         return pd.DataFrame()
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df[df["side"].astype(str).str.lower() == "sell"].copy()
-    if df.empty:
-        return df
+    # Accept the most common realized PnL field names used across scripts/exports.
+    pnl_source = None
+    for col in ("pnl_pct", "pnl_pct_num", "pnl_percent", "pnl"):
+        if col in df.columns:
+            pnl_source = col
+            break
 
-    if "pnl_pct" in df.columns:
-        df["pnl_pct_num"] = df["pnl_pct"].apply(_parse_pnl_pct)
+    if pnl_source is None:
+        return pd.DataFrame()
+
+    df["pnl_pct_num"] = df[pnl_source].apply(_parse_pnl_pct)
+
+    # Backfill missing pnl% from entry/exit prices when available.
+    if {"entry_price", "exit_price"}.issubset(df.columns):
+        entry = pd.to_numeric(df["entry_price"], errors="coerce")
+        exit_ = pd.to_numeric(df["exit_price"], errors="coerce")
+        computed = ((exit_ - entry) / entry) * 100.0
+        missing = df["pnl_pct_num"].isna()
+        df.loc[missing, "pnl_pct_num"] = computed[missing]
+
+    # Prefer explicit closed sides, but also keep rows with valid realized PnL.
+    if "side" in df.columns:
+        side_text = df["side"].astype(str).str.lower().str.strip()
+        closed_side = side_text.str.contains("sell|exit", regex=True)
     else:
-        df["pnl_pct_num"] = None
+        closed_side = pd.Series(False, index=df.index)
+    has_pnl = df["pnl_pct_num"].notna()
+    df = df[closed_side | has_pnl].copy()
 
     df = df.dropna(subset=["timestamp", "pnl_pct_num"]).copy()
     if df.empty:
