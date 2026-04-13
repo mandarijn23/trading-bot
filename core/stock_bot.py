@@ -50,6 +50,65 @@ try:
 except ImportError:
     HAS_RETRAINER = False
 
+try:
+    from model_drift import ModelDriftMonitor
+except ImportError:
+    ModelDriftMonitor = None
+
+try:
+    from concentration import PortfolioConcentrationMonitor
+except ImportError:
+    PortfolioConcentrationMonitor = None
+
+# NEW: Professional trading features
+try:
+    from multi_timeframe import MultiTimeframeAnalyzer, TimeframeDataManager
+    HAS_MULTIFRAME = True
+except ImportError:
+    HAS_MULTIFRAME = False
+
+try:
+    from execution_optimizer import ExecutionOptimizer
+    HAS_EXECUTION = True
+except ImportError:
+    HAS_EXECUTION = False
+
+try:
+    from kalman_filter import AdaptiveConfidenceFilter, BayesianEdgeDetector
+    HAS_KALMAN = True
+except ImportError:
+    HAS_KALMAN = False
+
+try:
+    from capital_allocation import MultiStrategyAllocator, KellyCriterion
+    HAS_CAPITAL_ALLOC = True
+except ImportError:
+    HAS_CAPITAL_ALLOC = False
+
+try:
+    from macro_regime import MacroRegimeDetector, LatencyTracker
+    HAS_MACRO_REGIME = True
+except ImportError:
+    HAS_MACRO_REGIME = False
+
+try:
+    from order_flow import OrderFlowDetector, VolumeProfileAnalyzer
+    HAS_ORDER_FLOW = True
+except ImportError:
+    HAS_ORDER_FLOW = False
+
+try:
+    from multi_strategy_engine import MultiStrategyEngine
+    HAS_MULTI_STRATEGY = True
+except ImportError:
+    HAS_MULTI_STRATEGY = False
+
+try:
+    from options_strategies import OptionsStrategyGenerator
+    HAS_OPTIONS = True
+except ImportError:
+    HAS_OPTIONS = False
+
 
 # Configure logging
 class SafeConsoleFilter(logging.Filter):
@@ -189,6 +248,37 @@ class StockTradingBot:
         self.retrainer = ModelRetrainer(retrain_interval=retrain_interval) if HAS_RETRAINER and self.ai else None
         self.portfolio = Portfolio(starting_balance=getattr(self.config, "starting_balance", 100000.0))
         self.risk = RiskManager(config)
+        self.drift_monitor = (
+            ModelDriftMonitor(
+                window_trades=getattr(self.config, "drift_detection_window_trades", 20),
+                threshold=getattr(self.config, "drift_detection_threshold", 0.20),
+                min_trades=getattr(self.config, "drift_detection_min_trades", 10),
+                confidence_floor=getattr(self.config, "drift_confidence_floor", 0.65),
+                risk_scale=getattr(self.config, "drift_risk_scale", 0.75),
+            )
+            if ModelDriftMonitor is not None
+            else None
+        )
+        self.concentration_monitor = (
+            PortfolioConcentrationMonitor(
+                max_symbol_exposure_pct=getattr(self.config, "max_symbol_exposure_pct", 0.20),
+                max_group_exposure_pct=getattr(self.config, "max_group_exposure_pct", 0.45),
+            )
+            if PortfolioConcentrationMonitor is not None
+            else None
+        )
+        
+        # NEW: Pro features initialization
+        self.multiframe_analyzer = MultiTimeframeAnalyzer() if HAS_MULTIFRAME else None
+        self.execution_optimizer = ExecutionOptimizer(config) if HAS_EXECUTION else None
+        self.kalman_filter = AdaptiveConfidenceFilter(prior_win_rate=0.55, initial_confidence=0.3) if HAS_KALMAN else None
+        self.capital_allocator = MultiStrategyAllocator() if HAS_CAPITAL_ALLOC else None
+        self.macro_regime_detector = MacroRegimeDetector() if HAS_MACRO_REGIME else None
+        self.latency_tracker = LatencyTracker(backtest_latency_ms=50) if HAS_MACRO_REGIME else None
+        self.order_flow_detector = OrderFlowDetector() if HAS_ORDER_FLOW else None
+        self.multi_strategy_engine = MultiStrategyEngine(symbols=getattr(self.config, "symbols", [])) if HAS_MULTI_STRATEGY else None
+        self.options_generator = OptionsStrategyGenerator(config) if HAS_OPTIONS else None
+        
         self.daily_pnl = 0.0  # Track daily P&L for max loss limit
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
         self.market = USMarketSession()
@@ -198,6 +288,9 @@ class StockTradingBot:
         self.active_symbols = list(self.config.symbols)
         self._insufficient_data_last_log: Dict[str, datetime] = {}
         self._account_snapshot_last_log: datetime | None = None
+        self.ai_confidence_floor_override = float(getattr(self.config, "min_ai_confidence", 0.45))
+        self.drift_risk_scale = 1.0
+        self._max_positions_notified_today = False  # Track if we've alerted about max positions
 
     def _build_universe(self) -> List[str]:
         """Build a unique symbol universe while preserving order."""
@@ -247,6 +340,12 @@ class StockTradingBot:
 
     def _refresh_active_symbols(self) -> None:
         """Pick top-ranked symbols from the configured universe."""
+        # Reset max positions notification flag on new day
+        today = datetime.now().date()
+        if today > self.start_date:
+            self._max_positions_notified_today = False
+            self.start_date = today
+        
         if not self.config.dynamic_symbol_selection:
             self.active_symbols = list(self.config.symbols)
             return
@@ -401,6 +500,32 @@ class StockTradingBot:
             reason = f"{reason} | exposure cap ${exposure_budget:.2f} left"
 
         reason = f"{reason} | conviction {conviction_multiplier:.2f} ({conviction_reason})"
+
+        if self.concentration_monitor:
+            concentration = self.concentration_monitor.limit_order(
+                symbol=symbol,
+                desired_quantity=qty,
+                price=price,
+                positions=self.positions,
+                equity=self.portfolio.equity,
+            )
+            adjusted_qty = int(concentration.get("adjusted_quantity", qty))
+            reason = f"{reason} | {concentration.get('reason', 'concentration check')}"
+
+            # Notify if concentration limit was applied
+            if adjusted_qty < qty and discord:
+                discord.notify_concentration_limit_hit(
+                    symbol,
+                    qty,
+                    adjusted_qty,
+                    concentration.get('reason', 'concentration limit')
+                )
+
+            qty = adjusted_qty
+
+            if qty <= 0:
+                return 0, reason
+
         return qty, reason
 
     def _compute_conviction_multiplier(
@@ -443,7 +568,137 @@ class StockTradingBot:
             reasons.append("trend")
 
         score = max(min_mult, min(max_mult, score))
+        score *= self.drift_risk_scale
+        score = max(min_mult, min(max_mult, score))
         return score, "+".join(reasons) if reasons else "neutral"
+
+    def _refresh_adaptive_controls(self) -> None:
+        """Refresh drift-based confidence and risk controls."""
+        if not self.drift_monitor:
+            self.ai_confidence_floor_override = float(getattr(self.config, "min_ai_confidence", 0.45))
+            self.drift_risk_scale = 1.0
+            return
+
+        try:
+            drift = self.drift_monitor.evaluate()
+            if drift.get("drift_detected"):
+                self.ai_confidence_floor_override = float(drift.get("recommended_min_ai_confidence", self.config.min_ai_confidence))
+                self.drift_risk_scale = float(drift.get("risk_scale", 0.75))
+                recent_wr = float(drift.get("recent_win_rate", 0.0))
+                baseline_wr = float(drift.get("baseline_win_rate", 0.0))
+                self.logger.warning(
+                    "Model drift detected | recent WR %.1f%% vs baseline %.1f%% | confidence floor %.2f | risk scale %.2f",
+                    recent_wr * 100,
+                    baseline_wr * 100,
+                    self.ai_confidence_floor_override,
+                    self.drift_risk_scale,
+                )
+                # Notify Discord
+                if discord:
+                    discord.notify_drift_detected(
+                        "Stock Bot",
+                        recent_wr,
+                        baseline_wr,
+                        self.ai_confidence_floor_override
+                    )
+            else:
+                self.ai_confidence_floor_override = float(getattr(self.config, "min_ai_confidence", 0.45))
+                self.drift_risk_scale = 1.0
+        except Exception as e:
+            self.logger.debug(f"Drift monitor unavailable: {e}")
+            self.ai_confidence_floor_override = float(getattr(self.config, "min_ai_confidence", 0.45))
+            self.drift_risk_scale = 1.0
+    
+    def _enrich_signal_with_pro_features(
+        self,
+        symbol: str,
+        base_signal: Literal["BUY", "HOLD", "SELL"],
+        df: pd.DataFrame,
+    ) -> tuple[Literal["BUY", "HOLD", "SELL"], float, str]:
+        """
+        Enrich trading signal with pro features:
+        - Multi-timeframe confluence
+        - Macro regime detection
+        - Order flow analysis
+        - Kalman filter confidence
+        - Execution optimization
+        
+        Returns:
+            (adjusted_signal, final_confidence, notes)
+        """
+        
+        ai_confidence = 0.5
+        if self.ai and base_signal == "BUY":
+            ai_confidence = self.ai.predict_entry_probability(df)
+        
+        notes = ""
+        signal_multiplier = 1.0
+        
+        # Multi-timeframe analysis
+        if self.multiframe_analyzer and len(df) >= 50:
+            try:
+                df_hourly = TimeframeDataManager.resample_to_hourly(df)
+                df_daily = TimeframeDataManager.resample_to_daily(df)
+                
+                if len(df_hourly) >= 20 and len(df_daily) >= 5:
+                    mtf = self.multiframe_analyzer.analyze(df, df_hourly, df_daily, base_signal)
+                    signal_multiplier *= mtf["confidence_multiplier"]
+                    
+                    if mtf["signal_quality"] == "POOR":
+                        base_signal = "HOLD"  # Reject poor confluence
+                    
+                    notes += f"MTF:{mtf['signal_quality']} "
+            except Exception as e:
+                self.logger.debug(f"Multi-timeframe error: {e}")
+        
+        # Macro regime detection
+        if self.macro_regime_detector:
+            try:
+                regime = self.macro_regime_detector.detect_regime(
+                    df,
+                    current_time=datetime.now(),
+                )
+                
+                signal_multiplier *= regime.trade_aggressiveness
+                
+                if not regime.should_trade:
+                    base_signal = "HOLD"
+                    notes += f"REGIME:{regime.regime} "
+                else:
+                    notes += f"Regime:{regime.regime} "
+            except Exception as e:
+                self.logger.debug(f"Macro regime error: {e}")
+        
+        # Order flow detection
+        if self.order_flow_detector:
+            try:
+                flow = self.order_flow_detector.detect_flow(df, symbol)
+                
+                if flow.institutional_probability > 0.6:
+                    signal_multiplier *= 1.1  # Boost when institutional presence detected
+                    notes += f"OF:{flow.pattern} "
+            except Exception as e:
+                self.logger.debug(f"Order flow error: {e}")
+        
+        # Kalman filter updates
+        if self.kalman_filter:
+            try:
+                can_trade, reason = self.kalman_filter.get_trading_allowed()
+                
+                if not can_trade:
+                    base_signal = "HOLD"
+                    notes += f"Kalman:BLOCKED({reason}) "
+                
+                kalman_mult = self.kalman_filter.get_confidence_multiplier()
+                signal_multiplier *= kalman_mult
+                notes += f"Kalman:{kalman_mult:.2f} "
+            except Exception as e:
+                self.logger.debug(f"Kalman error: {e}")
+        
+        # Apply final multiplier to confidence
+        final_confidence = min(1.0, ai_confidence * signal_multiplier)
+        
+        return base_signal, final_confidence, notes
         
     def connect(self) -> None:
         """Connect to Alpaca."""
@@ -585,20 +840,32 @@ class StockTradingBot:
                 if not self._check_daily_loss():
                     return  # Stop trading for the day
                 
-                if self._count_open_positions() >= self.config.max_open_positions:
-                    self.logger.debug(f"[{symbol}] Max open positions ({self.config.max_open_positions}) reached")
+                current_positions = self._count_open_positions()
+                if current_positions >= self.config.max_open_positions:
+                    # Only notify once per day to avoid spam
+                    if not self._max_positions_notified_today:
+                        self.logger.info(f"Max open positions ({self.config.max_open_positions}) reached")
+                        if discord:
+                            discord.notify_max_positions_reached(current_positions, self.config.max_open_positions)
+                        self._max_positions_notified_today = True
                     return
                 
                 signal, sig_details = get_signal_enhanced(df, self.config.rsi_period, self.config.rsi_oversold, self.config.rsi_overbought)
                 
+                # Apply pro features: multi-timeframe, regime, order flow, Kalman
+                signal, ai_confidence, multiframe_notes = self._enrich_signal_with_pro_features(
+                    symbol, signal, df
+                )
+                
                 # Log volume confirmation
                 volume_status = "✓" if sig_details.volume_confirm else "✗"
+
+                effective_min_ai_confidence = max(
+                    float(getattr(self.config, "min_ai_confidence", 0.45)),
+                    float(self.ai_confidence_floor_override),
+                )
                 
-                ai_confidence = 0.5
-                if self.ai and signal == "BUY":
-                    ai_confidence = self.ai.predict_entry_probability(df)
-                
-                if signal == "BUY" and (not self.ai or ai_confidence > self.config.min_ai_confidence):
+                if signal == "BUY" and (not self.ai or ai_confidence > effective_min_ai_confidence):
                     stop_loss_price = sig_details.stop_loss_atr or (price * (1 - self.config.stop_loss_pct))
                     conviction_multiplier, conviction_reason = self._compute_conviction_multiplier(
                         df,
@@ -640,29 +907,6 @@ class StockTradingBot:
                 
         except Exception as e:
             self.logger.error(f"[{symbol}] Error: {e}")
-    
-    def _check_daily_loss(self) -> bool:
-        """Check if daily loss exceeded. Resets at new day."""
-        # Reset if new day
-        today = datetime.now().date()
-        if today > self.start_date:
-            self.daily_pnl = 0.0
-            self.start_date = today
-
-        self.daily_pnl = self.portfolio.daily_pnl_pct()
-        
-        # Check limit
-        max_loss = -abs(self.config.max_daily_loss_pct)  # Negative number
-        if self.daily_pnl < max_loss:
-            self.logger.warning(f"🛑 Daily loss limit exceeded: {self.daily_pnl:.2f}% | Max: {max_loss:.2f}%")
-            return False  # Stop trading
-        return True
-    
-    def _count_open_positions(self) -> int:
-        """Count currently open positions."""
-        return sum(1 for pos in self.positions.values() if pos.active)
-    
-    def _validate_trade_size(self, trade_amount: float) -> bool:
         """Check trade size is above minimum."""
         if trade_amount < self.config.min_trade_usd:
             self.logger.debug(f"Trade size ${trade_amount:.2f} below minimum ${self.config.min_trade_usd:.2f}")
@@ -836,6 +1080,7 @@ class StockTradingBot:
                 self.loop_count += 1
                 if self.loop_count == 1 or self.loop_count % self.config.selection_refresh_cycles == 0:
                     self._refresh_active_symbols()
+                    self._refresh_adaptive_controls()
 
                 for symbol in self.active_symbols:
                     self.process_symbol(symbol)

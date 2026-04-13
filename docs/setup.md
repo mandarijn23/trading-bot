@@ -64,3 +64,20 @@ sudo tools/install_nas_stack.sh /home/nas/trading-bot
 ```
 
 That installs and enables the stock session, watchdog, daily profile graph job, and hourly training timer.
+
+## Local Detached Service
+
+If you want the stock bot to keep running after closing VS Code on a Linux desktop, install the user service:
+
+```bash
+chmod +x tools/install_local_stock_service.sh
+tools/install_local_stock_service.sh
+```
+
+Useful commands:
+
+```bash
+systemctl --user status trading-bot-stock-local.service
+journalctl --user -u trading-bot-stock-local.service -f
+systemctl --user stop trading-bot-stock-local.service
+```

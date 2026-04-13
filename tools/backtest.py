@@ -18,8 +18,9 @@ Run:
 """
 
 import logging
+import json
 import sys
-from typing import Dict, List, Tuple, Literal
+from typing import Dict, List, Optional, Tuple, Literal
 from dataclasses import dataclass
 from pathlib import Path
 import argparse
@@ -28,7 +29,7 @@ import ccxt
 import pandas as pd
 import numpy as np
 
-from config import load_config
+from stock_config import load_stock_config
 from strategy import get_signal
 from indicators import Indicators, MarketRegime
 
@@ -202,6 +203,8 @@ class ProfessionalBacktester:
         symbol: str,
         use_fees: bool = True,
         use_slippage: bool = True,
+        start_index: int = 0,
+        end_index: Optional[int] = None,
     ) -> Tuple[List[Trade], BacktestMetrics]:
         """
         Run backtest on historical data.
@@ -216,6 +219,8 @@ class ProfessionalBacktester:
             (trades_list, metrics)
         """
         df = df.reset_index(drop=True)
+        start_index = max(0, int(start_index))
+        end_index = len(df) if end_index is None else max(0, min(int(end_index), len(df)))
         
         capital = self.config.starting_capital
         position = None
@@ -230,9 +235,9 @@ class ProfessionalBacktester:
                 f"Bid/Ask: {self.config.bid_ask_spread*100:.2f}%")
         
         # Minimum lookback for indicators
-        min_lookback = 200
+        min_lookback = max(30, min(200, len(df) // 5))
         
-        for i in range(min_lookback, len(df)):
+        for i in range(max(min_lookback, start_index), end_index):
             df_window = df.iloc[:i+1].copy()
             row = df.iloc[i]
             current_price = float(row["close"])
@@ -363,14 +368,15 @@ class ProfessionalBacktester:
                     position = None
         
         # Close any open position at last price
-        if position is not None:
-            last_price = float(df.iloc[-1]["close"])
+        if position is not None and end_index > 0:
+            last_index = end_index - 1
+            last_price = float(df.iloc[last_index]["close"])
             pnl_net = (last_price - position["entry_price"]) * position["size"]
             capital += position["size"] * last_price
             
             trade = Trade(
                 entry_time=position["entry_time"],
-                exit_time=len(df) - 1,
+                exit_time=last_index,
                 entry_price=position["entry_price"],
                 exit_price=last_price,
                 size=position["size"],
@@ -511,6 +517,79 @@ class ProfessionalBacktester:
             total_slippage=total_slippage,
         )
 
+    def walk_forward_validation(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+    ) -> Dict[str, object]:
+        """Run rolling in-sample/out-of-sample validation."""
+        df = df.reset_index(drop=True)
+        train_size = max(30, int(self.config.walkforward_train_size))
+        test_size = max(10, int(self.config.walkforward_test_size))
+        step = max(1, int(self.config.walkforward_step))
+
+        if len(df) < train_size + test_size:
+            raise ValueError(
+                f"Not enough data for walk-forward validation: have {len(df)}, need {train_size + test_size}"
+            )
+
+        periods: List[Dict[str, object]] = []
+        for start in range(0, len(df) - train_size - test_size + 1, step):
+            window_end = start + train_size + test_size
+            window_df = df.iloc[start:window_end].copy()
+
+            _, train_metrics = self.backtest(
+                window_df,
+                symbol,
+                start_index=0,
+                end_index=train_size,
+            )
+            _, test_metrics = self.backtest(
+                window_df,
+                symbol,
+                start_index=train_size,
+                end_index=len(window_df),
+            )
+
+            ratio = (
+                train_metrics.sharpe_ratio / test_metrics.sharpe_ratio
+                if test_metrics.sharpe_ratio > 0 and train_metrics.sharpe_ratio > 0
+                else 1.0
+            )
+
+            periods.append(
+                {
+                    "start": start,
+                    "train_end": start + train_size,
+                    "test_end": window_end,
+                    "train_sharpe": train_metrics.sharpe_ratio,
+                    "test_sharpe": test_metrics.sharpe_ratio,
+                    "train_return_pct": train_metrics.total_return_pct,
+                    "test_return_pct": test_metrics.total_return_pct,
+                    "overfit_ratio": ratio,
+                }
+            )
+
+        avg_train_sharpe = float(np.mean([period["train_sharpe"] for period in periods]))
+        avg_test_sharpe = float(np.mean([period["test_sharpe"] for period in periods]))
+        avg_ratio = float(np.mean([period["overfit_ratio"] for period in periods]))
+        avg_train_return = float(np.mean([period["train_return_pct"] for period in periods]))
+        avg_test_return = float(np.mean([period["test_return_pct"] for period in periods]))
+
+        return {
+            "symbol": symbol,
+            "periods": periods,
+            "period_count": len(periods),
+            "avg_train_sharpe": avg_train_sharpe,
+            "avg_test_sharpe": avg_test_sharpe,
+            "avg_ratio": avg_ratio,
+            "avg_train_return_pct": avg_train_return,
+            "avg_test_return_pct": avg_test_return,
+            "train_size": train_size,
+            "test_size": test_size,
+            "step": step,
+        }
+
 
 def fetch_history(symbol: str, timeframe: str = "1h", limit: int = 1000) -> pd.DataFrame:
     """Fetch OHLCV data from Binance."""
@@ -537,7 +616,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        config = load_config()
+        config = load_stock_config()
         bt_config = BacktestConfig()
         backtest_engine = ProfessionalBacktester(bt_config)
         
@@ -549,21 +628,32 @@ def main():
             log.info(f"\n📊 Backtesting {symbol}...")
             
             df = fetch_history(symbol, config.timeframe, limit=1000)
-            
-            trades, metrics = backtest_engine.backtest(
-                df,
-                symbol,
-                use_fees=not args.no_fees,
-                use_slippage=not args.no_slippage,
-            )
-            
-            print(metrics)
-            
-            # Show recent trades
-            if trades:
-                log.info(f"\n📈 Recent trades (last 10):")
-                for trade in trades[-10:]:
-                    log.info(f"   {trade}")
+
+            if args.walk_forward:
+                summary = backtest_engine.walk_forward_validation(df, symbol)
+                log.info(
+                    "Walk-forward summary | periods=%s | avg_train_sharpe=%.2f | avg_test_sharpe=%.2f | avg_ratio=%.2f",
+                    summary["period_count"],
+                    summary["avg_train_sharpe"],
+                    summary["avg_test_sharpe"],
+                    summary["avg_ratio"],
+                )
+                print(json.dumps(summary, indent=2))
+            else:
+                trades, metrics = backtest_engine.backtest(
+                    df,
+                    symbol,
+                    use_fees=not args.no_fees,
+                    use_slippage=not args.no_slippage,
+                )
+
+                print(metrics)
+
+                # Show recent trades
+                if trades:
+                    log.info(f"\n📈 Recent trades (last 10):")
+                    for trade in trades[-10:]:
+                        log.info(f"   {trade}")
         
         log.info("\n✅ Backtest completed!")
     

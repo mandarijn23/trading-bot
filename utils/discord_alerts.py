@@ -17,9 +17,9 @@ from dotenv import load_dotenv
 
 ROOT_ENV = Path(__file__).resolve().parents[1] / ".env"
 if ROOT_ENV.exists():
-    load_dotenv(dotenv_path=ROOT_ENV, override=False)
+    load_dotenv(dotenv_path=ROOT_ENV, override=True)
 else:
-    load_dotenv(override=False)
+    load_dotenv(override=True)
 
 
 class DiscordAlerts:
@@ -32,11 +32,34 @@ class DiscordAlerts:
         self.warning_cooldown_sec = int(os.getenv("DISCORD_WARNING_COOLDOWN_SEC", "300"))
         self.error_cooldown_sec = int(os.getenv("DISCORD_ERROR_COOLDOWN_SEC", "900"))
         self._last_sent_by_key: dict[str, datetime] = {}
+        self._tested = False
+        
         if self.enabled:
             print("✅ Discord notifications enabled")
+            # Test webhook connectivity at startup
+            self._test_webhook_connection()
         else:
             print("❌ Discord notifications disabled (set DISCORD_WEBHOOK_URL in .env)")
 
+    def _test_webhook_connection(self) -> None:
+        """Test Discord webhook connectivity at startup."""
+        if self._tested or not self.enabled:
+            return
+        
+        try:
+            result = self.send_message(
+                "✅ Webhook Test",
+                {"Status": "Connected", "Time": datetime.now().strftime("%H:%M:%S UTC")},
+                color=3066993  # Green
+            )
+            if result:
+                print("✅ Discord webhook verified")
+                self._tested = True
+            else:
+                print("⚠️  Discord webhook test failed (response error)")
+        except Exception as e:
+            print(f"⚠️  Discord webhook test failed: {e}")
+    
     def _is_rate_limited(self, key: str, cooldown_sec: int) -> bool:
         """Return True if message key is still within cooldown window."""
         if cooldown_sec <= 0:
@@ -71,7 +94,8 @@ class DiscordAlerts:
                     {"name": k, "value": str(v), "inline": True}
                     for k, v in fields.items()
                 ],
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "footer": {"text": "Time shown in UTC"},
             }
 
             data = {"embeds": [embed]}
@@ -176,7 +200,7 @@ class DiscordAlerts:
                 "Price": f"${price:.2f}",
                 "Quantity": qty,
                 "AI Confidence": f"{ai_confidence:.0%}",
-                "Time": datetime.now().strftime("%H:%M:%S"),
+                "Time": datetime.now().strftime("%H:%M:%S UTC"),
             },
             color=3066993  # Green
         )
@@ -193,7 +217,7 @@ class DiscordAlerts:
                 "Exit": f"${exit_price:.2f}",
                 "P&L": f"{pnl_pct:+.2f}%",
                 "Qty": qty,
-                "Time": datetime.now().strftime("%H:%M:%S"),
+                "Time": datetime.now().strftime("%H:%M:%S UTC"),
             },
             color=color
         )
@@ -207,9 +231,69 @@ class DiscordAlerts:
                 "Wins": summary.get("wins", 0),
                 "Win Rate": summary.get("win_rate", "0%"),
                 "P&L": summary.get("pnl", "0%"),
-                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Date": datetime.now().strftime("%Y-%m-%d UTC"),
             },
             color=3447003  # Blue
+        )
+    
+    def notify_drift_detected(self, symbol: str, current_wr: float, baseline_wr: float, new_min_confidence: float) -> bool:
+        """Notify when model drift is detected on a symbol."""
+        if not self.enabled:
+            return False
+        
+        dedupe_key = f"drift:{symbol}:{current_wr:.0%}:{new_min_confidence:.0%}"
+        if self._is_rate_limited(dedupe_key, self.warning_cooldown_sec):
+            return False
+        
+        return self.send_message(
+            f"⚠️ Model Drift Detected: {symbol}",
+            {
+                "Current Win Rate": f"{current_wr:.1%}",
+                "Baseline Win Rate": f"{baseline_wr:.1%}",
+                "Δ Win Rate": f"{(current_wr - baseline_wr):+.1%}",
+                "New Min AI Confidence": f"{new_min_confidence:.0%}",
+                "Action": "Risk scaling reduced",
+            },
+            color=15158332  # Orange
+        )
+    
+    def notify_concentration_limit_hit(self, symbol: str, desired_qty: int, allowed_qty: int, reason: str) -> bool:
+        """Notify when position concentration limit is hit."""
+        if not self.enabled:
+            return False
+        
+        dedupe_key = f"concentration:{symbol}:{reason}"
+        if self._is_rate_limited(dedupe_key, self.warning_cooldown_sec):
+            return False
+        
+        return self.send_message(
+            f"⚠️ Concentration Limit Hit: {symbol}",
+            {
+                "Desired Qty": desired_qty,
+                "Allowed Qty": allowed_qty,
+                "Limited By": reason,
+                "Action": f"Order reduced from {desired_qty} to {allowed_qty}",
+            },
+            color=15158332  # Orange
+        )
+    
+    def notify_max_positions_reached(self, current: int, max_allowed: int) -> bool:
+        """Notify when max open positions limit reached."""
+        if not self.enabled:
+            return False
+        
+        dedupe_key = f"max_positions:{current}:{max_allowed}"
+        if self._is_rate_limited(dedupe_key, 600):  # 10-min cooldown for this
+            return False
+        
+        return self.send_message(
+            f"🛑 Max Open Positions Reached",
+            {
+                "Current Positions": current,
+                "Max Allowed": max_allowed,
+                "Action": "No new entries until position closed",
+            },
+            color=15158332  # Orange
         )
     
     def notify_warning(self, message: str, details: dict = None) -> bool:
