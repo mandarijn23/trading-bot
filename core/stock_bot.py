@@ -10,11 +10,16 @@ import sys
 import logging
 import time
 from math import log10
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
 
 try:
     import alpaca_trade_api as tradeapi
@@ -108,6 +113,25 @@ try:
     HAS_OPTIONS = True
 except ImportError:
     HAS_OPTIONS = False
+
+try:
+    from order_executor import ReliableOrderExecutor, OrderExecutionError, OrderRejectedError
+except ImportError:
+    ReliableOrderExecutor = None
+    OrderExecutionError = RuntimeError
+    OrderRejectedError = RuntimeError
+
+try:
+    from order_watchdog import OrderWatchdog
+except ImportError:
+    OrderWatchdog = None
+
+try:
+    from observability.json_logger import JsonEventLogger
+    from observability.trade_logger import TradeLogger
+except ImportError:
+    JsonEventLogger = None
+    TradeLogger = None
 
 
 # Configure logging
@@ -278,6 +302,13 @@ class StockTradingBot:
         self.order_flow_detector = OrderFlowDetector() if HAS_ORDER_FLOW else None
         self.multi_strategy_engine = MultiStrategyEngine(symbols=getattr(self.config, "symbols", [])) if HAS_MULTI_STRATEGY else None
         self.options_generator = OptionsStrategyGenerator(config) if HAS_OPTIONS else None
+        self.order_executor = None
+        self.order_watchdog = None
+        self._json_event_log_path = str(getattr(self.config, "json_event_log_path", "logs/events.jsonl"))
+        self._trades_db_path = str(getattr(self.config, "trades_db_path", "data/trades.db"))
+        self.event_logger = None
+        self.trade_logger = None
+        self._last_execution_by_symbol: Dict[str, dict] = {}
         
         self.daily_pnl = 0.0  # Track daily P&L for max loss limit
         self.start_date = datetime.now().date()  # Reset daily loss at midnight
@@ -459,6 +490,33 @@ class StockTradingBot:
 
         self.logger.info("Alpaca snapshot | " + " | ".join(parts))
         self._account_snapshot_last_log = now
+
+    def _init_observability(self) -> None:
+        """Initialize optional persistence and structured event logger lazily."""
+        if self.event_logger is None and JsonEventLogger is not None:
+            try:
+                self.event_logger = JsonEventLogger(file_path=self._json_event_log_path)
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize JsonEventLogger: {e}")
+
+        if self.trade_logger is None and TradeLogger is not None:
+            try:
+                self.trade_logger = TradeLogger(
+                    db_path=self._trades_db_path,
+                    event_logger=self.event_logger,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize TradeLogger: {e}")
+
+    def _emit_event(self, event: dict, level: str = "INFO", component: str = "StockBot") -> None:
+        """Emit structured JSON event when logger is configured."""
+        self._init_observability()
+        if self.event_logger is None:
+            return
+        try:
+            self.event_logger.log_event(event=event, level=level, component=component)
+        except Exception as e:
+            self.logger.debug(f"Structured event logging failed: {e}")
 
     def _size_order(
         self,
@@ -703,6 +761,7 @@ class StockTradingBot:
     def connect(self) -> None:
         """Connect to Alpaca."""
         try:
+            self._init_observability()
             if tradeapi is None:
                 raise ImportError("alpaca_trade_api is required for live/paper trading")
 
@@ -720,14 +779,51 @@ class StockTradingBot:
                 self.logger.info("✅ Connected to Alpaca (PAPER TRADING)")
             else:
                 self.logger.warning("⚠️  Connected to Alpaca (LIVE TRADING)")
+
+            self._emit_event(
+                {
+                    "event": "broker_connected",
+                    "paper_trading": bool(self.config.paper_trading),
+                    "symbols": self.active_symbols,
+                },
+                level="INFO",
+                component="Connection",
+            )
             
             # Initialize positions
             self.positions = {s: StockPosition(s) for s in self.universe_symbols}
             self._refresh_active_symbols()
             self._sync_from_account()
+
+            if ReliableOrderExecutor is not None:
+                self.order_executor = ReliableOrderExecutor(
+                    self.api,
+                    logger=self.logger,
+                    max_retries=int(getattr(self.config, "order_max_retries", 3)),
+                    initial_backoff_sec=float(getattr(self.config, "order_retry_backoff_sec", 1.0)),
+                    verify_fill_timeout_sec=float(getattr(self.config, "order_fill_timeout_sec", 30.0)),
+                    poll_interval_sec=float(getattr(self.config, "order_poll_interval_sec", 1.0)),
+                )
+
+            if OrderWatchdog is not None:
+                self.order_watchdog = OrderWatchdog(
+                    self.api,
+                    logger=self.logger,
+                    max_open_seconds=int(getattr(self.config, "stuck_order_seconds", 30)),
+                    auto_cancel=bool(getattr(self.config, "cancel_stuck_orders", True)),
+                    on_alert=self._on_stuck_order_alert,
+                )
             
         except Exception as e:
             self.logger.error(f"Failed to connect: {e}")
+            self._emit_event(
+                {
+                    "event": "broker_connect_failed",
+                    "error": str(e),
+                },
+                level="ERROR",
+                component="Connection",
+            )
             raise
 
     def fetch_bars(self, symbol: str, limit: int = 250) -> pd.DataFrame:
@@ -763,26 +859,289 @@ class StockTradingBot:
             self.logger.error(f"Failed to fetch bars for {symbol}: {e}")
             return pd.DataFrame()
 
-    def place_order(self, side: Literal["buy", "sell"], symbol: str, qty: int, ai_confidence: float = 0.5) -> bool:
+    def place_order(
+        self,
+        side: Literal["buy", "sell"],
+        symbol: str,
+        qty: int,
+        ai_confidence: float = 0.5,
+        expected_price: float | None = None,
+    ) -> bool:
         """Place order on Alpaca."""
         try:
+            side_norm = str(side).lower()
             if self.config.paper_trading or qty <= 0:
-                confidence_str = f" (AI: {ai_confidence:.0%})" if side == "buy" else ""
+                confidence_str = f" (AI: {ai_confidence:.0%})" if side_norm == "buy" else ""
                 self.logger.info(f"[PAPER] {side.upper()} {qty} {symbol}{confidence_str}")
+                self._last_execution_by_symbol[symbol] = {
+                    "side": side_norm,
+                    "status": "paper",
+                    "filled_qty": int(qty),
+                    "avg_fill_price": expected_price,
+                    "latency_ms": 0,
+                }
+                self._emit_event(
+                    {
+                        "event": "order_submitted",
+                        "mode": "paper",
+                        "symbol": symbol,
+                        "side": side_norm,
+                        "qty": int(qty),
+                        "expected_price": expected_price,
+                    },
+                    level="INFO",
+                    component="OrderExecution",
+                )
                 return True
-            
-            self.api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side=side,
-                type="market",
-                time_in_force="day",
-            )
+
+            if self.order_executor is not None:
+                result = self.order_executor.place_market_order(
+                    symbol=symbol,
+                    side=side,
+                    qty=qty,
+                )
+                self.logger.info(
+                    "[LIVE] %s %s %s | status=%s filled=%s avg_price=%.4f attempts=%s latency_ms=%s",
+                    side.upper(),
+                    qty,
+                    symbol,
+                    result.status,
+                    result.filled_qty,
+                    result.avg_fill_price,
+                    result.attempts,
+                    result.latency_ms,
+                )
+                if result.partial_fill:
+                    self.logger.warning(
+                        "Partial fill detected | symbol=%s requested=%s filled=%s",
+                        symbol,
+                        qty,
+                        result.filled_qty,
+                    )
+                self._last_execution_by_symbol[symbol] = {
+                    "side": side_norm,
+                    "status": result.status,
+                    "filled_qty": int(result.filled_qty),
+                    "avg_fill_price": float(result.avg_fill_price) if result.avg_fill_price else None,
+                    "latency_ms": int(result.latency_ms),
+                    "attempts": int(result.attempts),
+                }
+                self._emit_event(
+                    {
+                        "event": "order_submitted",
+                        "mode": "live",
+                        "symbol": symbol,
+                        "side": side_norm,
+                        "qty": int(qty),
+                        "filled_qty": int(result.filled_qty),
+                        "status": result.status,
+                        "avg_fill_price": float(result.avg_fill_price) if result.avg_fill_price else None,
+                        "latency_ms": int(result.latency_ms),
+                        "attempts": int(result.attempts),
+                        "expected_price": expected_price,
+                    },
+                    level="INFO",
+                    component="OrderExecution",
+                )
+                return result.filled_qty > 0
+
+            self.api.submit_order(symbol=symbol, qty=qty, side=side, type="market", time_in_force="day")
             self.logger.info(f"[LIVE] {side.upper()} {qty} {symbol}")
+            self._last_execution_by_symbol[symbol] = {
+                "side": side_norm,
+                "status": "submitted",
+                "filled_qty": int(qty),
+                "avg_fill_price": None,
+                "latency_ms": None,
+            }
+            self._emit_event(
+                {
+                    "event": "order_submitted",
+                    "mode": "live",
+                    "symbol": symbol,
+                    "side": side_norm,
+                    "qty": int(qty),
+                    "status": "submitted",
+                    "expected_price": expected_price,
+                },
+                level="INFO",
+                component="OrderExecution",
+            )
             return True
+        except OrderRejectedError as e:
+            self.logger.error(f"Order rejected for {symbol}: {e}")
+            self._emit_event(
+                {
+                    "event": "order_rejected",
+                    "symbol": symbol,
+                    "side": str(side).lower(),
+                    "qty": int(qty),
+                    "error": str(e),
+                },
+                level="ERROR",
+                component="OrderExecution",
+            )
+            return False
+        except OrderExecutionError as e:
+            self.logger.error(f"Order execution failed for {symbol}: {e}")
+            self._emit_event(
+                {
+                    "event": "order_execution_failed",
+                    "symbol": symbol,
+                    "side": str(side).lower(),
+                    "qty": int(qty),
+                    "error": str(e),
+                },
+                level="ERROR",
+                component="OrderExecution",
+            )
+            return False
         except Exception as e:
             self.logger.error(f"Order failed for {symbol}: {e}")
+            self._emit_event(
+                {
+                    "event": "order_failed",
+                    "symbol": symbol,
+                    "side": str(side).lower(),
+                    "qty": int(qty),
+                    "error": str(e),
+                },
+                level="ERROR",
+                component="OrderExecution",
+            )
             return False
+
+    def _on_stuck_order_alert(self, alert) -> None:
+        """Handle stale open-order alerts from watchdog."""
+        self.logger.warning(
+            "Order watchdog alert | symbol=%s side=%s status=%s age=%.1fs order_id=%s",
+            alert.symbol,
+            alert.side,
+            alert.status,
+            alert.age_seconds,
+            alert.order_id,
+        )
+        self._emit_event(
+            {
+                "event": "stuck_order_alert",
+                "symbol": alert.symbol,
+                "side": alert.side,
+                "status": alert.status,
+                "age_seconds": float(alert.age_seconds),
+                "order_id": alert.order_id,
+            },
+            level="WARNING",
+            component="OrderWatchdog",
+        )
+        if discord:
+            try:
+                discord.notify_error(
+                    "Stuck order detected",
+                    {
+                        "symbol": alert.symbol,
+                        "side": alert.side,
+                        "status": alert.status,
+                        "age_seconds": f"{alert.age_seconds:.1f}",
+                        "order_id": alert.order_id,
+                    },
+                )
+            except Exception as e:
+                self.logger.debug(f"Failed to send stuck-order alert: {e}")
+
+    def _actual_slippage_for(self, symbol: str, side: str, expected_price: float) -> float | None:
+        """Compute signed execution slippage from the last order metadata."""
+        exec_meta = self._last_execution_by_symbol.get(symbol)
+        if not exec_meta:
+            return None
+
+        fill_price = exec_meta.get("avg_fill_price")
+        if fill_price is None or expected_price <= 0:
+            return None
+
+        side_norm = str(side).lower()
+        if side_norm == "buy":
+            return float(fill_price) - float(expected_price)
+        return float(expected_price) - float(fill_price)
+
+    def _record_entry_trade(
+        self,
+        symbol: str,
+        entry_price: float,
+        entry_size: int,
+        signal_regime: str | None = None,
+    ) -> None:
+        """Persist entry records for post-trade analytics."""
+        if self.api is None:
+            return
+        self._init_observability()
+        if self.trade_logger is None:
+            return
+
+        strategy_name = str(getattr(self.config, "strategy_name", "RSI_2MA"))
+        expected_slippage = float(getattr(self.config, "backtest_slippage_assumption", 0.0))
+        trade_id = self.trade_logger.record_entry(
+            symbol=symbol,
+            entry_price=entry_price,
+            entry_size=entry_size,
+            entry_side="BUY",
+            strategy_name=strategy_name,
+            signal_regime=signal_regime,
+            entry_time=datetime.now(timezone.utc),
+            backtest_expected_pnl=None,
+            backtest_slippage_assumption=expected_slippage,
+        )
+        self._emit_event(
+            {
+                "event": "trade_entry_persisted",
+                "trade_id": int(trade_id),
+                "symbol": symbol,
+                "entry_price": float(entry_price),
+                "entry_size": int(entry_size),
+                "strategy_name": strategy_name,
+                "signal_regime": signal_regime,
+            },
+            level="INFO",
+            component="TradePersistence",
+        )
+
+    def _record_exit_trade(
+        self,
+        symbol: str,
+        exit_price: float,
+        exit_size: int,
+        exit_reason: str,
+        fees: float = 0.0,
+    ) -> None:
+        """Persist exit records and attach slippage observations."""
+        if self.api is None:
+            return
+        self._init_observability()
+        if self.trade_logger is None:
+            return
+
+        actual_slippage = self._actual_slippage_for(symbol, side="sell", expected_price=exit_price)
+        row = self.trade_logger.record_exit_for_symbol(
+            symbol=symbol,
+            exit_price=exit_price,
+            exit_size=exit_size,
+            exit_reason=exit_reason,
+            fees=fees,
+            exit_time=datetime.now(timezone.utc),
+            actual_slippage=actual_slippage,
+        )
+        self._emit_event(
+            {
+                "event": "trade_exit_persisted",
+                "symbol": symbol,
+                "exit_price": float(exit_price),
+                "exit_size": int(exit_size),
+                "exit_reason": exit_reason,
+                "pnl": float(row.get("pnl") or 0.0) if row else None,
+                "actual_slippage": actual_slippage,
+            },
+            level="INFO",
+            component="TradePersistence",
+        )
 
     def process_symbol(self, symbol: str) -> None:
         """Process single stock."""
@@ -813,7 +1172,7 @@ class StockTradingBot:
             exit_reason = pos.check_exit(price, self.config.trailing_stop_pct)
             if exit_reason in ("TRAIL_STOP", "TAKE_PROFIT"):
                 self.logger.info(f"[{symbol}] EXIT {exit_reason} @ ${price:.2f}")
-                success = self.place_order("sell", symbol, pos.quantity)
+                success = self.place_order("sell", symbol, pos.quantity, expected_price=price)
                 if success:
                     was_loss = price < pos.entry_price
                     pnl = (price - pos.entry_price) * pos.quantity
@@ -822,11 +1181,19 @@ class StockTradingBot:
                     
                     self._log_trade(symbol, "sell", pos.entry_price, pos.quantity, pos.ai_confidence, 
                                    exit_reason=exit_reason, exit_price=price, pnl=pnl)
+                    self._record_exit_trade(
+                        symbol=symbol,
+                        exit_price=price,
+                        exit_size=pos.quantity,
+                        exit_reason=exit_reason,
+                        fees=0.0,
+                    )
                     
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
                     if self.retrainer:
                         self.retrainer.record_closed_trade()
+                    self.risk.update_trade_result(not was_loss)
                     
                     # Send Discord notification
                     if discord:
@@ -848,6 +1215,15 @@ class StockTradingBot:
                         if discord:
                             discord.notify_max_positions_reached(current_positions, self.config.max_open_positions)
                         self._max_positions_notified_today = True
+                    return
+
+                allowed, reason = self.risk.check_pre_trade(
+                    self.portfolio,
+                    symbol,
+                    current_positions,
+                )
+                if not allowed:
+                    self.logger.warning(f"[{symbol}] Trade blocked by risk manager: {reason}")
                     return
                 
                 signal, sig_details = get_signal_enhanced(df, self.config.rsi_period, self.config.rsi_oversold, self.config.rsi_overbought)
@@ -893,9 +1269,15 @@ class StockTradingBot:
                             f"[{symbol}] BUY signal | Vol:{volume_status} | ATR:{sig_details.atr:.2f} | "
                             f"AI:{ai_confidence:.0%} | Qty:{qty} | {size_reason}"
                         )
-                        success = self.place_order("buy", symbol, qty, ai_confidence)
+                        success = self.place_order("buy", symbol, qty, ai_confidence, expected_price=price)
                         if success:
                             self._log_trade(symbol, "buy", price, qty, ai_confidence)
+                            self._record_entry_trade(
+                                symbol=symbol,
+                                entry_price=price,
+                                entry_size=qty,
+                                signal_regime=multiframe_notes.strip() or None,
+                            )
                             pos.open(price, qty, self.config.stop_loss_pct, self.config.take_profit_pct, ai_confidence, atr_stop=sig_details.stop_loss_atr)
                             # Send Discord notification
                             if discord:
@@ -907,6 +1289,23 @@ class StockTradingBot:
                 
         except Exception as e:
             self.logger.error(f"[{symbol}] Error: {e}")
+
+    def _count_open_positions(self) -> int:
+        """Count open positions currently tracked in memory."""
+        return sum(1 for pos in self.positions.values() if pos.active)
+
+    def _check_daily_loss(self) -> bool:
+        """Stop new entries when daily drawdown breaches configured limit."""
+        max_dd = float(getattr(self.config, "max_daily_loss_pct", 0.05))
+        dd_pct = float(self.portfolio.daily_drawdown_pct())
+        if dd_pct <= -max_dd:
+            self.logger.warning(
+                f"Daily drawdown limit reached ({dd_pct:.2f}% <= -{max_dd*100:.2f}%). New entries paused."
+            )
+            return False
+        return True
+
+    def _validate_trade_size(self, trade_amount: float) -> bool:
         """Check trade size is above minimum."""
         if trade_amount < self.config.min_trade_usd:
             self.logger.debug(f"Trade size ${trade_amount:.2f} below minimum ${self.config.min_trade_usd:.2f}")
@@ -931,7 +1330,7 @@ class StockTradingBot:
                     price = float(df["close"].iloc[-1])
 
                 self.logger.info(f"[{symbol}] EXIT {reason} @ ${price:.2f}")
-                success = self.place_order("sell", symbol, pos.quantity)
+                success = self.place_order("sell", symbol, pos.quantity, expected_price=price)
                 if success:
                     was_loss = price < pos.entry_price
                     pnl = (price - pos.entry_price) * pos.quantity
@@ -948,11 +1347,19 @@ class StockTradingBot:
                         exit_price=price,
                         pnl=pnl,
                     )
+                    self._record_exit_trade(
+                        symbol=symbol,
+                        exit_price=price,
+                        exit_size=pos.quantity,
+                        exit_reason=reason,
+                        fees=0.0,
+                    )
 
                     if self.ai:
                         self.ai.update_from_trade(pnl, not was_loss)
                     if self.retrainer:
                         self.retrainer.record_closed_trade()
+                    self.risk.update_trade_result(not was_loss)
 
                     if discord:
                         discord.notify_sell(symbol, pos.entry_price, price, pos.quantity, pnl_pct, reason)
@@ -1032,6 +1439,22 @@ class StockTradingBot:
                     f"{pnl:.2f}" if pnl else "",
                     f"{pnl_pct:.2f}%" if pnl_pct else ""
                 ])
+
+            self._emit_event(
+                {
+                    "event": "trade_csv_logged",
+                    "symbol": symbol,
+                    "side": side,
+                    "entry_price": float(price),
+                    "qty": int(qty),
+                    "ai_confidence": float(ai_confidence),
+                    "exit_reason": exit_reason,
+                    "exit_price": float(exit_price) if exit_price else None,
+                    "pnl": float(pnl) if pnl is not None else None,
+                },
+                level="INFO",
+                component="TradeLogging",
+            )
         except Exception as e:
             self.logger.debug(f"Failed to log trade: {e}")
 
@@ -1101,6 +1524,9 @@ class StockTradingBot:
 
                 if self.market.seconds_until_close() <= self.config.check_interval:
                     self.logger.info("Market close approaching | preparing to stop at close")
+
+                if self.order_watchdog is not None:
+                    self.order_watchdog.check_once()
                 
                 time.sleep(self.config.check_interval)
                 
