@@ -43,6 +43,12 @@ The current operating mode is paper trading first. The code is structured to mak
 pip install -r requirements.txt
 ```
 
+Optional (only if you use the TensorFlow backend in `models/ml_model.py`):
+
+```bash
+pip install -r requirements-ml.txt
+```
+
 2. Create the local environment file.
 
 ```bash

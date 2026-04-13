@@ -10,6 +10,3 @@ pydantic-settings
 python-dotenv
 scikit-learn
 yfinance
-
-# Optional ML backend for models/ml_model.py
-tensorflow
