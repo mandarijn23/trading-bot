@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, Mapping, Any
+from typing import Iterable, Mapping, Any, Sequence
 
 from persistence.trade_store import TradeStore
 
@@ -41,15 +41,29 @@ class TradeRecordRepository:
         );
         """
 
+        benchmark_schema = """
+        CREATE TABLE IF NOT EXISTS benchmark_prices (
+            symbol TEXT NOT NULL,
+            price_time TEXT NOT NULL,
+            close REAL NOT NULL,
+            source TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, price_time)
+        );
+        """
+
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);",
             "CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_name);",
             "CREATE INDEX IF NOT EXISTS idx_trades_entry_date ON trades(date(entry_time));",
             "CREATE INDEX IF NOT EXISTS idx_trades_regime ON trades(signal_regime);",
+            "CREATE INDEX IF NOT EXISTS idx_benchmark_symbol_time ON benchmark_prices(symbol, datetime(price_time));",
+            "CREATE INDEX IF NOT EXISTS idx_benchmark_price_date ON benchmark_prices(date(price_time));",
         ]
 
         with self.store.connect() as conn:
             conn.execute(schema)
+            conn.execute(benchmark_schema)
             for stmt in indexes:
                 conn.execute(stmt)
             conn.commit()
@@ -281,6 +295,232 @@ class TradeRecordRepository:
                 """
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def record_benchmark_price(
+        self,
+        symbol: str,
+        close_price: float,
+        price_time: datetime | str | None = None,
+        source: str = "alpaca",
+    ) -> dict[str, Any]:
+        """Upsert one benchmark close observation."""
+        symbol_key = str(symbol).upper().strip()
+        ts = self._to_iso(price_time)
+        close = float(close_price)
+
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO benchmark_prices (symbol, price_time, close, source)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol, price_time)
+                DO UPDATE SET close = excluded.close, source = excluded.source
+                """,
+                (symbol_key, ts, close, str(source)),
+            )
+            conn.commit()
+
+        return {
+            "symbol": symbol_key,
+            "price_time": ts,
+            "close": close,
+            "source": str(source),
+        }
+
+    def get_benchmark_prices(
+        self,
+        symbol: str,
+        since: str | None = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """Fetch benchmark observations sorted by time ascending."""
+        symbol_key = str(symbol).upper().strip()
+        with self.store.connect() as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT symbol, price_time, close, source
+                    FROM benchmark_prices
+                    WHERE symbol = ? AND datetime(price_time) >= datetime(?)
+                    ORDER BY datetime(price_time) ASC
+                    LIMIT ?
+                    """,
+                    (symbol_key, str(since), int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT symbol, price_time, close, source
+                    FROM benchmark_prices
+                    WHERE symbol = ?
+                    ORDER BY datetime(price_time) ASC
+                    LIMIT ?
+                    """,
+                    (symbol_key, int(limit)),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_monthly_strategy_returns(self, since: str | None = None) -> list[dict[str, Any]]:
+        """Compute monthly realized strategy returns from closed trades."""
+        with self.store.connect() as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT strftime('%Y-%m', COALESCE(exit_time, entry_time)) AS month,
+                           COUNT(*) AS trades,
+                           SUM(COALESCE(pnl, 0)) AS net_pnl,
+                           SUM(COALESCE(entry_price, 0) * COALESCE(entry_size, 0)) AS gross_notional
+                    FROM trades
+                    WHERE pnl IS NOT NULL
+                      AND datetime(COALESCE(exit_time, entry_time)) >= datetime(?)
+                    GROUP BY month
+                    ORDER BY month ASC
+                    """,
+                    (str(since),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT strftime('%Y-%m', COALESCE(exit_time, entry_time)) AS month,
+                           COUNT(*) AS trades,
+                           SUM(COALESCE(pnl, 0)) AS net_pnl,
+                           SUM(COALESCE(entry_price, 0) * COALESCE(entry_size, 0)) AS gross_notional
+                    FROM trades
+                    WHERE pnl IS NOT NULL
+                    GROUP BY month
+                    ORDER BY month ASC
+                    """
+                ).fetchall()
+
+        monthly: list[dict[str, Any]] = []
+        for row in rows:
+            month = str(row["month"] or "")
+            if not month:
+                continue
+
+            trades = int(row["trades"] or 0)
+            net_pnl = float(row["net_pnl"] or 0.0)
+            gross_notional = float(row["gross_notional"] or 0.0)
+            strategy_return_pct = (net_pnl / gross_notional * 100.0) if gross_notional > 0 else 0.0
+
+            monthly.append(
+                {
+                    "month": month,
+                    "trades": trades,
+                    "net_pnl": net_pnl,
+                    "gross_notional": gross_notional,
+                    "strategy_return_pct": strategy_return_pct,
+                }
+            )
+        return monthly
+
+    def get_monthly_benchmark_returns(self, symbol: str, since: str | None = None) -> list[dict[str, Any]]:
+        """Compute month-over-month return percentages for one benchmark symbol."""
+        symbol_key = str(symbol).upper().strip()
+        rows = self.get_benchmark_prices(symbol=symbol_key, since=since)
+
+        buckets: dict[str, dict[str, float]] = {}
+        for row in rows:
+            ts = str(row.get("price_time") or "")
+            if len(ts) < 7:
+                continue
+
+            month = ts[:7]
+            close = float(row.get("close") or 0.0)
+            if close <= 0:
+                continue
+
+            if month not in buckets:
+                buckets[month] = {"start_close": close, "end_close": close}
+            else:
+                buckets[month]["end_close"] = close
+
+        monthly: list[dict[str, Any]] = []
+        for month in sorted(buckets.keys()):
+            start_close = float(buckets[month]["start_close"])
+            end_close = float(buckets[month]["end_close"])
+            ret = ((end_close / start_close) - 1.0) * 100.0 if start_close > 0 else 0.0
+            monthly.append(
+                {
+                    "month": month,
+                    "symbol": symbol_key,
+                    "start_close": start_close,
+                    "end_close": end_close,
+                    "benchmark_return_pct": ret,
+                }
+            )
+        return monthly
+
+    def get_monthly_benchmark_comparison(
+        self,
+        benchmark_symbols: Sequence[str] = ("SPY", "VTI"),
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        """Compare realized monthly strategy returns against benchmark returns."""
+        symbols = [str(s).upper().strip() for s in benchmark_symbols if str(s).strip()]
+        if not symbols:
+            symbols = ["SPY", "VTI"]
+
+        strategy_rows = self.get_monthly_strategy_returns(since=since)
+        benchmark_maps: dict[str, dict[str, float]] = {}
+
+        for symbol in symbols:
+            monthly = self.get_monthly_benchmark_returns(symbol=symbol, since=since)
+            benchmark_maps[symbol] = {
+                str(row["month"]): float(row["benchmark_return_pct"])
+                for row in monthly
+            }
+
+        comparison_rows: list[dict[str, Any]] = []
+        for strategy in strategy_rows:
+            month = str(strategy["month"])
+            row: dict[str, Any] = {
+                "month": month,
+                "trades": int(strategy["trades"]),
+                "net_pnl": float(strategy["net_pnl"]),
+                "strategy_return_pct": float(strategy["strategy_return_pct"]),
+            }
+
+            for symbol in symbols:
+                benchmark_ret = benchmark_maps.get(symbol, {}).get(month)
+                row[f"{symbol}_return_pct"] = benchmark_ret
+                row[f"excess_vs_{symbol}_pct"] = (
+                    float(strategy["strategy_return_pct"]) - benchmark_ret
+                    if benchmark_ret is not None
+                    else None
+                )
+
+            comparison_rows.append(row)
+
+        summary: dict[str, Any] = {
+            "months_compared": len(comparison_rows),
+            "strategy_positive_months": sum(1 for row in comparison_rows if float(row["strategy_return_pct"]) > 0),
+            "strategy_avg_monthly_return_pct": (
+                sum(float(row["strategy_return_pct"]) for row in comparison_rows) / len(comparison_rows)
+                if comparison_rows
+                else 0.0
+            ),
+        }
+
+        for symbol in symbols:
+            excess_values = [
+                float(row[f"excess_vs_{symbol}_pct"])
+                for row in comparison_rows
+                if row.get(f"excess_vs_{symbol}_pct") is not None
+            ]
+            summary[f"avg_excess_vs_{symbol}_pct"] = (
+                sum(excess_values) / len(excess_values)
+                if excess_values
+                else 0.0
+            )
+            summary[f"positive_excess_months_vs_{symbol}"] = sum(1 for value in excess_values if value > 0)
+
+        return {
+            "since": since,
+            "benchmark_symbols": symbols,
+            "monthly": comparison_rows,
+            "summary": summary,
+        }
 
     def get_strategy_stats(self, strategy_name: str) -> dict[str, Any]:
         with self.store.connect() as conn:

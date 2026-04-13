@@ -78,6 +78,8 @@ Use the Week 2 persistence database to inspect results quickly:
 - `python observability/query_cli.py --db data/trades.db slippage`
 - `python observability/query_cli.py --db data/trades.db trades SPY --since 2026-04-01`
 - `python observability/query_cli.py --db data/trades.db reconcile`
+- `python observability/query_cli.py --db data/trades.db benchmark --symbols SPY,VTI`
+- `python tools/monthly_tearsheet.py --db data/trades.db --month 2026-04 --symbols SPY,VTI`
 - Add `--json` to any command for machine-readable output
 
 ## Safety Notes

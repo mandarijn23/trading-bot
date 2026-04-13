@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from observability.query_cli import (
+    cmd_benchmark,
     cmd_daily,
     cmd_reconcile,
     cmd_slippage,
@@ -82,6 +83,27 @@ def _seed_repo(repo: TradeRecordRepository) -> None:
         actual_slippage=-0.01,
     )
 
+    repo.record_benchmark_price(
+        symbol="SPY",
+        close_price=100.0,
+        price_time=(now - timedelta(days=8)).isoformat(),
+    )
+    repo.record_benchmark_price(
+        symbol="SPY",
+        close_price=103.0,
+        price_time=(now - timedelta(days=1)).isoformat(),
+    )
+    repo.record_benchmark_price(
+        symbol="VTI",
+        close_price=200.0,
+        price_time=(now - timedelta(days=8)).isoformat(),
+    )
+    repo.record_benchmark_price(
+        symbol="VTI",
+        close_price=206.0,
+        price_time=(now - timedelta(days=1)).isoformat(),
+    )
+
 
 def test_query_commands_return_expected_shapes(tmp_path):
     db_path = tmp_path / "trades.db"
@@ -108,6 +130,12 @@ def test_query_commands_return_expected_shapes(tmp_path):
     assert reconcile["compared_trades"] == 3
     assert "total_pnl_variance" in reconcile
 
+    benchmark = cmd_benchmark(repo, benchmark_symbols=["SPY", "VTI"])
+    assert benchmark["summary"]["months_compared"] >= 1
+    assert len(benchmark["monthly"]) >= 1
+    assert "SPY_return_pct" in benchmark["monthly"][0]
+    assert "excess_vs_SPY_pct" in benchmark["monthly"][0]
+
 
 def test_cmd_trades_since_filter(tmp_path):
     db_path = tmp_path / "trades.db"
@@ -131,6 +159,12 @@ def test_main_json_output_and_since_validation(tmp_path, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["strategy_name"] == "RSI_2MA"
+
+    rc = main(["--db", str(db_path), "--json", "benchmark", "--symbols", "SPY,VTI"])
+    assert rc == 0
+    benchmark_payload = json.loads(capsys.readouterr().out)
+    assert "monthly" in benchmark_payload
+    assert "summary" in benchmark_payload
 
     with pytest.raises(ValueError):
         main(["--db", str(db_path), "trades", "SPY", "--since", "not-a-date"])

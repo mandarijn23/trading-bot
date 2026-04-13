@@ -78,6 +78,17 @@ def cmd_reconcile(repo: TradeRecordRepository, since: str | None = None) -> dict
     return summary
 
 
+def cmd_benchmark(
+    repo: TradeRecordRepository,
+    since: str | None = None,
+    benchmark_symbols: list[str] | None = None,
+) -> dict[str, Any]:
+    symbols = [str(s).upper().strip() for s in (benchmark_symbols or ["SPY", "VTI"]) if str(s).strip()]
+    if not symbols:
+        symbols = ["SPY", "VTI"]
+    return repo.get_monthly_benchmark_comparison(benchmark_symbols=symbols, since=since)
+
+
 def _print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=True))
 
@@ -149,6 +160,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_reconcile = sub.add_parser("reconcile", help="Backtest vs live variance summary")
     p_reconcile.add_argument("--since", default=None, help="ISO datetime/date lower bound")
 
+    p_benchmark = sub.add_parser("benchmark", help="Monthly strategy returns vs benchmark symbols")
+    p_benchmark.add_argument("--since", default=None, help="ISO datetime/date lower bound")
+    p_benchmark.add_argument(
+        "--symbols",
+        default="SPY,VTI",
+        help="Comma-separated benchmark symbols (default: SPY,VTI)",
+    )
+
     return parser
 
 
@@ -201,6 +220,21 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(data)
         else:
             _print_dict("Backtest vs Live Reconciliation", data)
+        return 0
+
+    if args.command == "benchmark":
+        symbols = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()]
+        data = cmd_benchmark(repo, since=since, benchmark_symbols=symbols)
+        if args.json:
+            _print_json(data)
+        else:
+            print("Benchmark Comparison")
+            _print_dict("Summary", data.get("summary", {}))
+            columns = ["month", "trades", "net_pnl", "strategy_return_pct"]
+            for symbol in data.get("benchmark_symbols", symbols):
+                columns.append(f"{symbol}_return_pct")
+                columns.append(f"excess_vs_{symbol}_pct")
+            _print_rows("Monthly Comparison", data.get("monthly", []), columns)
         return 0
 
     parser.print_help()

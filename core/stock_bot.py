@@ -65,6 +65,21 @@ try:
 except ImportError:
     PortfolioConcentrationMonitor = None
 
+try:
+    from portfolio_analytics import PortfolioRiskAnalyzer
+except ImportError:
+    PortfolioRiskAnalyzer = None
+
+try:
+    from sector_exposure import SectorExposureAnalyzer
+except ImportError:
+    SectorExposureAnalyzer = None
+
+try:
+    from health_monitor import HealthMonitor
+except ImportError:
+    HealthMonitor = None
+
 # NEW: Professional trading features
 try:
     from multi_timeframe import MultiTimeframeAnalyzer, TimeframeDataManager
@@ -291,6 +306,35 @@ class StockTradingBot:
             if PortfolioConcentrationMonitor is not None
             else None
         )
+        self.portfolio_risk_analyzer = (
+            PortfolioRiskAnalyzer(
+                correlation_threshold=float(getattr(self.config, "correlation_threshold", 0.85)),
+                max_portfolio_heat_pct=float(getattr(self.config, "max_portfolio_heat_pct", 0.15)),
+                min_periods=int(getattr(self.config, "correlation_min_periods", 30)),
+                lookback_bars=int(getattr(self.config, "correlation_lookback_bars", 120)),
+                fallback_stop_pct=float(getattr(self.config, "stop_loss_pct", 0.03)),
+            )
+            if PortfolioRiskAnalyzer is not None
+            else None
+        )
+        self.sector_exposure_analyzer = (
+            SectorExposureAnalyzer(
+                max_sector_exposure_pct=float(getattr(self.config, "max_sector_exposure_pct", 0.40)),
+                imbalance_alert_pct=float(getattr(self.config, "sector_imbalance_alert_pct", 0.30)),
+            )
+            if SectorExposureAnalyzer is not None
+            else None
+        )
+        self.health_monitor = (
+            HealthMonitor(
+                cpu_load_warn_pct=float(getattr(self.config, "health_cpu_load_warn_pct", 90.0)),
+                memory_warn_pct=float(getattr(self.config, "health_memory_warn_pct", 90.0)),
+                disk_warn_pct=float(getattr(self.config, "health_disk_warn_pct", 90.0)),
+                api_stale_sec=int(getattr(self.config, "health_api_stale_sec", 180)),
+            )
+            if HealthMonitor is not None
+            else None
+        )
         
         # NEW: Pro features initialization
         self.multiframe_analyzer = MultiTimeframeAnalyzer() if HAS_MULTIFRAME else None
@@ -322,6 +366,27 @@ class StockTradingBot:
         self.ai_confidence_floor_override = float(getattr(self.config, "min_ai_confidence", 0.45))
         self.drift_risk_scale = 1.0
         self._max_positions_notified_today = False  # Track if we've alerted about max positions
+        self.benchmark_symbols = self._normalize_benchmark_symbols(
+            getattr(self.config, "benchmark_symbols", ["SPY", "VTI"])
+        )
+        self.benchmark_record_every_loops = max(1, int(getattr(self.config, "benchmark_record_every_loops", 1)))
+        self.health_check_every_loops = max(1, int(getattr(self.config, "health_check_every_loops", 1)))
+        self.health_alert_cooldown_sec = max(0, int(getattr(self.config, "health_alert_cooldown_sec", 300)))
+        self._last_health_alert_at: datetime | None = None
+        self._last_api_heartbeat_at: datetime | None = None
+
+    @staticmethod
+    def _normalize_benchmark_symbols(symbols: List[str]) -> List[str]:
+        """Normalize and de-duplicate benchmark symbols while preserving order."""
+        ordered: List[str] = []
+        seen = set()
+        for symbol in symbols:
+            normalized = str(symbol).strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
 
     def _build_universe(self) -> List[str]:
         """Build a unique symbol universe while preserving order."""
@@ -415,6 +480,7 @@ class StockTradingBot:
             self.portfolio.sync_from_account(account)
             self.portfolio.new_day(datetime.now().date())
             self.daily_pnl = self.portfolio.daily_pnl_pct()
+            self._last_api_heartbeat_at = datetime.now(timezone.utc)
 
             live_positions = {position.symbol: position for position in self.api.list_positions()}
             for symbol in list(self.positions.keys()):
@@ -444,6 +510,69 @@ class StockTradingBot:
             self._log_account_snapshot(account)
         except Exception as e:
             self.logger.warning(f"Failed to sync Alpaca account state: {e}")
+
+    def _run_health_checks(self) -> None:
+        """Run periodic health checks and alert on critical failures."""
+        if self.health_monitor is None:
+            return
+
+        report = self.health_monitor.evaluate(
+            last_api_heartbeat_at=self._last_api_heartbeat_at,
+            now=datetime.now(timezone.utc),
+            api_required=bool(self.api is not None),
+        )
+        issues = report.get("issues", [])
+
+        self._emit_event(
+            {
+                "event": "health_check",
+                "metrics": report.get("metrics", {}),
+                "heartbeat_age_sec": report.get("heartbeat_age_sec"),
+                "issue_count": len(issues),
+                "issues": issues,
+            },
+            level="INFO" if not issues else "WARNING",
+            component="HealthMonitor",
+        )
+
+        if not issues:
+            return
+
+        for issue in issues:
+            level = str(issue.get("level", "warning")).lower()
+            component = str(issue.get("component", "unknown"))
+            message = str(issue.get("message", "health issue"))
+            value = issue.get("value")
+            threshold = issue.get("threshold")
+            suffix = ""
+            if value is not None and threshold is not None:
+                suffix = f" | value={value:.2f} threshold={float(threshold):.2f}"
+            if level == "critical":
+                self.logger.error(f"Health critical [{component}] {message}{suffix}")
+            else:
+                self.logger.warning(f"Health warning [{component}] {message}{suffix}")
+
+        has_critical = bool(report.get("has_critical", False))
+        if not has_critical or not discord:
+            return
+
+        now = datetime.now(timezone.utc)
+        if self._last_health_alert_at is not None:
+            elapsed = (now - self._last_health_alert_at).total_seconds()
+            if elapsed < self.health_alert_cooldown_sec:
+                return
+
+        self._last_health_alert_at = now
+        critical = [issue for issue in issues if str(issue.get("level", "")).lower() == "critical"]
+        details = {
+            "critical_issues": len(critical),
+            "issues": "; ".join(
+                f"{issue.get('component')}: {issue.get('message')}"
+                for issue in critical[:3]
+            ) or "none",
+            "heartbeat_age_sec": report.get("heartbeat_age_sec"),
+        }
+        discord.notify_error("Health monitor critical state", details)
 
     def _current_gross_exposure_value(self) -> float:
         """Estimate current gross exposure from synced positions."""
@@ -490,6 +619,53 @@ class StockTradingBot:
 
         self.logger.info("Alpaca snapshot | " + " | ".join(parts))
         self._account_snapshot_last_log = now
+
+    def _record_benchmark_prices(self) -> None:
+        """Persist latest benchmark closes for portfolio-relative performance tracking."""
+        if not self.benchmark_symbols:
+            return
+
+        self._init_observability()
+        if self.trade_logger is None:
+            return
+
+        captured: list[dict] = []
+        for symbol in self.benchmark_symbols:
+            try:
+                bars = self.fetch_bars(symbol, limit=2)
+                if bars.empty or "close" not in bars:
+                    continue
+
+                close_price = float(bars["close"].iloc[-1])
+                ts_value = bars["timestamp"].iloc[-1] if "timestamp" in bars else datetime.now(timezone.utc)
+                price_time = ts_value.isoformat() if hasattr(ts_value, "isoformat") else str(ts_value)
+
+                row = self.trade_logger.record_benchmark_price(
+                    symbol=symbol,
+                    close_price=close_price,
+                    price_time=price_time,
+                    source="alpaca",
+                )
+                captured.append(
+                    {
+                        "symbol": row["symbol"],
+                        "price_time": row["price_time"],
+                        "close": row["close"],
+                    }
+                )
+            except Exception as e:
+                self.logger.debug(f"Benchmark capture skipped for {symbol}: {e}")
+
+        if captured:
+            self._emit_event(
+                {
+                    "event": "benchmark_prices_recorded",
+                    "count": len(captured),
+                    "rows": captured,
+                },
+                level="INFO",
+                component="BenchmarkTracking",
+            )
 
     def _init_observability(self) -> None:
         """Initialize optional persistence and structured event logger lazily."""
@@ -1217,6 +1393,24 @@ class StockTradingBot:
                         self._max_positions_notified_today = True
                     return
 
+                heat_blocked, heat_pct, max_heat_pct = self._portfolio_heat_gate()
+                if heat_blocked:
+                    self.logger.warning(
+                        f"[{symbol}] Trade blocked by portfolio heat: "
+                        f"{heat_pct*100:.2f}% >= {max_heat_pct*100:.2f}%"
+                    )
+                    self._emit_event(
+                        {
+                            "event": "trade_blocked_portfolio_heat",
+                            "symbol": symbol,
+                            "heat_pct": heat_pct,
+                            "max_heat_pct": max_heat_pct,
+                        },
+                        level="WARNING",
+                        component="PortfolioRisk",
+                    )
+                    return
+
                 allowed, reason = self.risk.check_pre_trade(
                     self.portfolio,
                     symbol,
@@ -1242,6 +1436,24 @@ class StockTradingBot:
                 )
                 
                 if signal == "BUY" and (not self.ai or ai_confidence > effective_min_ai_confidence):
+                    corr_allowed, corr_reason, max_corr = self._correlation_gate(symbol)
+                    if not corr_allowed:
+                        self.logger.warning(
+                            f"[{symbol}] Trade blocked by correlation gate: "
+                            f"{corr_reason} (max={max_corr:.2f})"
+                        )
+                        self._emit_event(
+                            {
+                                "event": "trade_blocked_correlation",
+                                "symbol": symbol,
+                                "reason": corr_reason,
+                                "max_correlation": max_corr,
+                            },
+                            level="WARNING",
+                            component="PortfolioRisk",
+                        )
+                        return
+
                     stop_loss_price = sig_details.stop_loss_atr or (price * (1 - self.config.stop_loss_pct))
                     conviction_multiplier, conviction_reason = self._compute_conviction_multiplier(
                         df,
@@ -1265,6 +1477,48 @@ class StockTradingBot:
                         return
                     
                     if qty > 0:
+                        sector_allowed, sector_decision = self._sector_exposure_gate(symbol, qty, price)
+                        imbalance = sector_decision.get("imbalance_sectors", {})
+                        if imbalance:
+                            imbalance_text = ", ".join(
+                                f"{sector_name}={sector_pct*100:.1f}%"
+                                for sector_name, sector_pct in sorted(imbalance.items())
+                            )
+                            self.logger.warning(f"Sector imbalance alert | {imbalance_text}")
+                            self._emit_event(
+                                {
+                                    "event": "sector_imbalance_alert",
+                                    "symbol": symbol,
+                                    "imbalance_sectors": imbalance,
+                                },
+                                level="WARNING",
+                                component="PortfolioRisk",
+                            )
+
+                        if not sector_allowed:
+                            projected_pct = float(sector_decision.get("projected_sector_pct", 0.0))
+                            max_pct = float(sector_decision.get("max_sector_exposure_pct", 0.0))
+                            sector_name = str(sector_decision.get("sector", "UNKNOWN"))
+                            reason = str(sector_decision.get("reason", "sector_cap_exceeded"))
+                            self.logger.warning(
+                                f"[{symbol}] Trade blocked by sector gate: {reason} "
+                                f"({sector_name} {projected_pct*100:.2f}% > {max_pct*100:.2f}%)"
+                            )
+                            self._emit_event(
+                                {
+                                    "event": "trade_blocked_sector_exposure",
+                                    "symbol": symbol,
+                                    "sector": sector_name,
+                                    "reason": reason,
+                                    "projected_sector_pct": projected_pct,
+                                    "max_sector_exposure_pct": max_pct,
+                                    "imbalance_sectors": imbalance,
+                                },
+                                level="WARNING",
+                                component="PortfolioRisk",
+                            )
+                            return
+
                         self.logger.info(
                             f"[{symbol}] BUY signal | Vol:{volume_status} | ATR:{sig_details.atr:.2f} | "
                             f"AI:{ai_confidence:.0%} | Qty:{qty} | {size_reason}"
@@ -1304,6 +1558,68 @@ class StockTradingBot:
             )
             return False
         return True
+
+    def _portfolio_heat_gate(self) -> tuple[bool, float, float]:
+        """Evaluate portfolio heat breaker before opening new positions."""
+        max_heat = float(getattr(self.config, "max_portfolio_heat_pct", 0.15))
+        if self.portfolio_risk_analyzer is None:
+            return False, 0.0, max_heat
+
+        blocked, heat = self.portfolio_risk_analyzer.should_block_for_heat(
+            positions=self.positions,
+            equity=self.portfolio.equity,
+        )
+        return bool(blocked), float(heat), max_heat
+
+    def _correlation_gate(self, candidate_symbol: str) -> tuple[bool, str, float]:
+        """Block entries when candidate is too correlated to open positions."""
+        if self.portfolio_risk_analyzer is None:
+            return True, "disabled", 0.0
+
+        open_symbols = [
+            symbol
+            for symbol, pos in self.positions.items()
+            if getattr(pos, "active", False) and symbol != candidate_symbol
+        ]
+        if not open_symbols:
+            return True, "no_open_positions", 0.0
+
+        lookback = int(getattr(self.config, "correlation_lookback_bars", 120))
+        frames: dict[str, pd.DataFrame] = {}
+        for symbol in [candidate_symbol] + open_symbols:
+            bars = self.fetch_bars(symbol, limit=lookback)
+            if isinstance(bars, pd.DataFrame) and not bars.empty:
+                frames[symbol] = bars
+
+        decision = self.portfolio_risk_analyzer.check_entry_correlation(
+            candidate_symbol=candidate_symbol,
+            open_symbols=open_symbols,
+            price_frames=frames,
+        )
+        return bool(decision.allowed), str(decision.reason), float(decision.max_correlation)
+
+    def _sector_exposure_gate(self, candidate_symbol: str, qty: int, price: float) -> tuple[bool, dict]:
+        """Block entries that would push one sector beyond concentration limits."""
+        max_sector = float(getattr(self.config, "max_sector_exposure_pct", 0.40))
+        if self.sector_exposure_analyzer is None:
+            return True, {
+                "allowed": True,
+                "sector": "UNKNOWN",
+                "current_sector_pct": 0.0,
+                "projected_sector_pct": 0.0,
+                "max_sector_exposure_pct": max_sector,
+                "reason": "disabled",
+                "imbalance_sectors": {},
+            }
+
+        decision = self.sector_exposure_analyzer.check_entry_limit(
+            candidate_symbol=candidate_symbol,
+            desired_quantity=qty,
+            price=price,
+            positions=self.positions,
+            equity=self.portfolio.equity,
+        )
+        return bool(decision.allowed), decision.to_dict()
 
     def _validate_trade_size(self, trade_amount: float) -> bool:
         """Check trade size is above minimum."""
@@ -1504,6 +1820,12 @@ class StockTradingBot:
                 if self.loop_count == 1 or self.loop_count % self.config.selection_refresh_cycles == 0:
                     self._refresh_active_symbols()
                     self._refresh_adaptive_controls()
+
+                if self.loop_count == 1 or self.loop_count % self.benchmark_record_every_loops == 0:
+                    self._record_benchmark_prices()
+
+                if self.loop_count == 1 or self.loop_count % self.health_check_every_loops == 0:
+                    self._run_health_checks()
 
                 for symbol in self.active_symbols:
                     self.process_symbol(symbol)

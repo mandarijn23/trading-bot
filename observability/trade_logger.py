@@ -145,3 +145,30 @@ class TradeLogger:
 
     def get_active_trade_id(self, symbol: str) -> int | None:
         return self._active_trade_ids.get(str(symbol).upper())
+
+    def record_benchmark_price(
+        self,
+        symbol: str,
+        close_price: float,
+        price_time: datetime | str | None = None,
+        source: str = "alpaca",
+    ) -> dict[str, Any]:
+        """Persist one benchmark price observation and emit an event."""
+        row = self.repo.record_benchmark_price(
+            symbol=symbol,
+            close_price=close_price,
+            price_time=price_time,
+            source=source,
+        )
+
+        self.event_logger.info(
+            {
+                "component": "TradeLogger",
+                "event": "benchmark_price_recorded",
+                "symbol": row["symbol"],
+                "price_time": row["price_time"],
+                "close": row["close"],
+                "source": row["source"],
+            }
+        )
+        return row

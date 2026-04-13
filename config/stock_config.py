@@ -50,10 +50,57 @@ class StockTradingConfig(BaseSettings):
         validation_alias="STOCK_UNIVERSE_SYMBOLS"
     )
 
+    benchmark_symbols: Annotated[List[str], NoDecode] = Field(
+        default=["SPY", "VTI"],
+        validation_alias="STOCK_BENCHMARK_SYMBOLS"
+    )
+
     # Dynamic symbol selection controls.
     dynamic_symbol_selection: bool = Field(default=False, validation_alias="STOCK_DYNAMIC_SELECTION")
     dynamic_symbol_count: int = Field(default=3, ge=1, le=30, validation_alias="STOCK_DYNAMIC_SYMBOL_COUNT")
     selection_refresh_cycles: int = Field(default=15, ge=1, le=300, validation_alias="STOCK_SELECTION_REFRESH_CYCLES")
+    benchmark_record_every_loops: int = Field(
+        default=1,
+        ge=1,
+        le=500,
+        validation_alias="STOCK_BENCHMARK_RECORD_EVERY_LOOPS",
+    )
+    health_check_every_loops: int = Field(
+        default=1,
+        ge=1,
+        le=500,
+        validation_alias="STOCK_HEALTH_CHECK_EVERY_LOOPS",
+    )
+    health_alert_cooldown_sec: int = Field(
+        default=300,
+        ge=0,
+        le=86400,
+        validation_alias="STOCK_HEALTH_ALERT_COOLDOWN_SEC",
+    )
+    health_api_stale_sec: int = Field(
+        default=180,
+        ge=5,
+        le=3600,
+        validation_alias="STOCK_HEALTH_API_STALE_SEC",
+    )
+    health_cpu_load_warn_pct: float = Field(
+        default=90.0,
+        ge=1,
+        le=100,
+        validation_alias="STOCK_HEALTH_CPU_WARN_PCT",
+    )
+    health_memory_warn_pct: float = Field(
+        default=90.0,
+        ge=1,
+        le=100,
+        validation_alias="STOCK_HEALTH_MEMORY_WARN_PCT",
+    )
+    health_disk_warn_pct: float = Field(
+        default=90.0,
+        ge=1,
+        le=100,
+        validation_alias="STOCK_HEALTH_DISK_WARN_PCT",
+    )
 
     # Liquidity and volatility filters for dynamic selection.
     min_dollar_volume: float = Field(default=2_000_000.0, ge=0, validation_alias="STOCK_MIN_DOLLAR_VOLUME")
@@ -121,6 +168,42 @@ class StockTradingConfig(BaseSettings):
         lt=1,
         validation_alias="STOCK_MAX_GROSS_EXPOSURE_PCT",
     )
+    max_portfolio_heat_pct: float = Field(
+        default=0.15,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_PORTFOLIO_HEAT_PCT",
+    )
+    max_sector_exposure_pct: float = Field(
+        default=0.40,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_MAX_SECTOR_EXPOSURE_PCT",
+    )
+    sector_imbalance_alert_pct: float = Field(
+        default=0.30,
+        gt=0,
+        lt=1,
+        validation_alias="STOCK_SECTOR_IMBALANCE_ALERT_PCT",
+    )
+    correlation_threshold: float = Field(
+        default=0.85,
+        ge=0,
+        le=1,
+        validation_alias="STOCK_CORRELATION_THRESHOLD",
+    )
+    correlation_lookback_bars: int = Field(
+        default=120,
+        ge=30,
+        le=1000,
+        validation_alias="STOCK_CORRELATION_LOOKBACK_BARS",
+    )
+    correlation_min_periods: int = Field(
+        default=30,
+        ge=10,
+        le=500,
+        validation_alias="STOCK_CORRELATION_MIN_PERIODS",
+    )
     
     # Use AI for entries?
     use_ai: bool = Field(default=True, validation_alias="STOCK_USE_AI")
@@ -158,6 +241,18 @@ class StockTradingConfig(BaseSettings):
     @classmethod
     def parse_universe_symbols(cls, v):
         return cls.parse_symbols(v)
+
+    @field_validator("benchmark_symbols", mode="before")
+    @classmethod
+    def parse_benchmark_symbols(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return ["SPY", "VTI"]
+        if isinstance(v, list) and len(v) == 0:
+            return ["SPY", "VTI"]
+        parsed = cls.parse_symbols(v)
+        if not parsed:
+            return ["SPY", "VTI"]
+        return parsed
 
 
 def load_stock_config() -> StockTradingConfig:

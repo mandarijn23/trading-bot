@@ -122,3 +122,80 @@ class TestTradingConfig:
                 alpaca_api_secret="test_secret",
                 check_interval=0,
             )
+
+    def test_config_sector_exposure_bounds(self):
+        """Test sector exposure and imbalance thresholds must be between 0 and 1."""
+        with pytest.raises(ValidationError):
+            StockTradingConfig(
+                alpaca_api_key="test_key",
+                alpaca_api_secret="test_secret",
+                max_sector_exposure_pct=1.2,
+            )
+
+        config = StockTradingConfig(
+            alpaca_api_key="test_key",
+            alpaca_api_secret="test_secret",
+            max_sector_exposure_pct=0.40,
+            sector_imbalance_alert_pct=0.30,
+        )
+
+        assert config.max_sector_exposure_pct == 0.40
+        assert config.sector_imbalance_alert_pct == 0.30
+
+    def test_config_benchmark_symbols_and_loop_interval(self):
+        """Test benchmark tracking symbols parsing and loop interval validation."""
+        config = StockTradingConfig(
+            alpaca_api_key="test_key",
+            alpaca_api_secret="test_secret",
+            benchmark_symbols="SPY,VTI",
+            benchmark_record_every_loops=2,
+        )
+
+        assert config.benchmark_symbols == ["SPY", "VTI"]
+        assert config.benchmark_record_every_loops == 2
+
+        config_blank = StockTradingConfig(
+            alpaca_api_key="test_key",
+            alpaca_api_secret="test_secret",
+            benchmark_symbols="",
+        )
+        assert config_blank.benchmark_symbols == ["SPY", "VTI"]
+
+        with pytest.raises(ValidationError):
+            StockTradingConfig(
+                alpaca_api_key="test_key",
+                alpaca_api_secret="test_secret",
+                benchmark_record_every_loops=0,
+            )
+
+    def test_config_health_monitor_bounds(self):
+        """Validate health monitor thresholds and cadence bounds."""
+        config = StockTradingConfig(
+            alpaca_api_key="test_key",
+            alpaca_api_secret="test_secret",
+            health_check_every_loops=3,
+            health_alert_cooldown_sec=120,
+            health_api_stale_sec=300,
+            health_cpu_load_warn_pct=92,
+            health_memory_warn_pct=93,
+            health_disk_warn_pct=94,
+        )
+
+        assert config.health_check_every_loops == 3
+        assert config.health_alert_cooldown_sec == 120
+        assert config.health_api_stale_sec == 300
+        assert config.health_cpu_load_warn_pct == 92
+
+        with pytest.raises(ValidationError):
+            StockTradingConfig(
+                alpaca_api_key="test_key",
+                alpaca_api_secret="test_secret",
+                health_api_stale_sec=0,
+            )
+
+        with pytest.raises(ValidationError):
+            StockTradingConfig(
+                alpaca_api_key="test_key",
+                alpaca_api_secret="test_secret",
+                health_cpu_load_warn_pct=150,
+            )

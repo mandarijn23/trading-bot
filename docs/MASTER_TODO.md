@@ -15,7 +15,8 @@ Last updated: 2026-04-13
 - [x] Add symbol-plus-date filtering helper in persistence/trade_record.py
 - [x] Add tests for query CLI outputs and argument handling
 - [x] Add README usage examples for query CLI commands
-- [ ] Start Week 3 with portfolio heat and correlation circuit breaker
+- [x] Start Week 3 with portfolio heat and correlation circuit breaker
+- [x] Add Week 3B sector exposure gate and imbalance alerts
 
 ## Week 2.5 - Query CLI (P0, 1 day)
 
@@ -44,35 +45,36 @@ Last updated: 2026-04-13
 ## Week 3 - Portfolio Analytics (P0, 3-4 days)
 
 ### Correlation and Heat
-- [ ] Create module for correlation matrix and portfolio heat
-- [ ] Add high-correlation alert threshold (> 0.85)
-- [ ] Add portfolio heat circuit breaker (> 15% blocks new entries)
-- [ ] Wire checks into stock bot pre-entry flow
-- [ ] Add tests for correlation math and heat breaker behavior
+- [x] Create module for correlation matrix and portfolio heat
+- [x] Add high-correlation alert threshold (> 0.85)
+- [x] Add portfolio heat circuit breaker (> 15% blocks new entries)
+- [x] Wire checks into stock bot pre-entry flow
+- [x] Add tests for correlation math and heat breaker behavior
 
 ### Sector Exposure
-- [ ] Create sector mapping and exposure tracker
-- [ ] Add sector limit enforcement (example: tech <= 40%)
-- [ ] Add sector imbalance alert
-- [ ] Add tests for mapping and limit enforcement
+- [x] Create sector mapping and exposure tracker
+- [x] Add sector limit enforcement (example: tech <= 40%)
+- [x] Add sector imbalance alert
+- [x] Add tests for mapping and limit enforcement
 
 ### Benchmark and Tearsheet
-- [ ] Add benchmark tracker (SPY and VTI comparison)
-- [ ] Add monthly return vs benchmark summary
-- [ ] Add tearsheet generator (monthly report)
-- [ ] Add tests for benchmark and report calculations
+- [x] Add benchmark tracker (SPY and VTI comparison)
+- [x] Add monthly return vs benchmark summary
+- [x] Add tearsheet generator (monthly report)
+- [x] Add tests for benchmark calculations
+- [x] Add tests for tearsheet report calculations
 
 ### Definition of Done
 - [ ] Hourly correlation and heat stats produced
-- [ ] New entries blocked when heat exceeds threshold
+- [x] New entries blocked when heat exceeds threshold
 - [ ] Monthly tearsheet generated without manual edits
 
 ## Week 4 - Operational Hardening (P1, 3-4 days)
 
 ### Health Monitoring
-- [ ] Create health monitor (API heartbeat, CPU, memory, disk)
-- [ ] Add Discord alerts on critical health failures
-- [ ] Add tests with failure injection
+- [x] Create health monitor (API heartbeat, CPU, memory, disk)
+- [x] Add Discord alerts on critical health failures
+- [x] Add tests with failure injection
 
 ### Emergency Controls
 - [ ] Create emergency controls (kill, pause, resume)
