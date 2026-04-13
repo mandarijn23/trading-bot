@@ -1,269 +1,301 @@
 """
-Multi-Timeframe Confluence Detection.
+Multi-Timeframe Analysis Module
 
-Validates 15-minute signals against hourly/daily trends to reduce false positives.
-This is one of the highest-impact improvements - filters ~40% of bad signals.
+Allows bot to analyze multiple timeframes simultaneously for:
+- Trend confirmation (higher timeframe)
+- Entry timing (lower timeframe)
+- Regime detection across timeframes
+- Better entry/exit quality
 
-Features:
-- Verify intraday signal aligns with daily trend
-- Check support/resistance at multiple timeframes
-- Confidence boost when multiple timeframes agree
-- Probability of mean reversion based on deviation from moving averages
+Example:
+- 4h candle: Determines main trend (UPTREND/DOWNTREND)
+- 1h candle: Confirms pullback entry within that trend
+- 15m candle: Times the exact entry point
 """
 
+from typing import Dict, List, Literal, NamedTuple
+import re
 import pandas as pd
-import numpy as np
-from typing import Dict, Literal, Optional, Tuple
+from indicators import Indicators, MarketRegime
 
-from indicators import Indicators
+
+class TimeframeSignal(NamedTuple):
+    """Signal from single timeframe."""
+    timeframe: str
+    signal: Literal["BUY", "HOLD", "SELL"]
+    strength: float  # 0.0 to 1.0 (confidence)
+    price: float
+    trend: str  # "UPTREND", "DOWNTREND", "RANGING"
+    rsi: float
+    ema_short: float
+    ema_long: float
 
 
 class MultiTimeframeAnalyzer:
-    """Validates signals across 15-min, 1-hour, daily, and weekly timeframes."""
+    """Analyze multiple timeframes for combined trading signals."""
     
-    def __init__(self):
-        self.logger = None
+    def __init__(self, primary_timeframes: List[str] = None, delay_bars: int = 1):
+        """
+        Initialize analyzer.
+        
+        Args:
+            primary_timeframes: List of timeframes to analyze
+                                (default: ["4h", "1h", "15m"])
+            delay_bars: Number of bars to delay signals (prevents lookahead bias)
+                       1 = wait for bar to fully close before acting
+        """
+        self.primary_timeframes = primary_timeframes or ["4h", "1h", "15m"]
+        self.data: Dict[str, pd.DataFrame] = {}
+        self.signals: Dict[str, TimeframeSignal] = {}
+        self.delay_bars = delay_bars  # ✅ ANTI-LOOKAHEAD BIAS
+
+    @staticmethod
+    def _timeframe_to_minutes(timeframe: str) -> int:
+        """Convert timeframe strings like 5m/1h/1d to minutes for robust ordering."""
+        tf = str(timeframe).strip().lower()
+        match = re.fullmatch(r"(\d+)([mhdw])", tf)
+        if not match:
+            return -1
+
+        value = int(match.group(1))
+        unit = match.group(2)
+        factors = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+        return value * factors[unit]
     
-    def analyze(
+    def add_timeframe_data(self, timeframe: str, df: pd.DataFrame) -> None:
+        """
+        Add OHLCV data for a timeframe.
+        
+        Args:
+            timeframe: Timeframe string (e.g., "1h", "4h")
+            df: DataFrame with OHLCV data
+        """
+        self.data[timeframe] = df.copy()
+    
+    def analyze_single_timeframe(
         self,
-        df_15min: pd.DataFrame,
-        df_hourly: pd.DataFrame,
-        df_daily: pd.DataFrame,
-        signal_direction: Literal["BUY", "SELL"],
-    ) -> Dict:
+        timeframe: str,
+        df: pd.DataFrame,
+        rsi_period: int = 14,
+        ema_fast: int = 9,
+        ema_slow: int = 21,
+    ) -> TimeframeSignal:
         """
-        Analyze signal across multiple timeframes.
+        Analyze single timeframe WITH NO LOOKAHEAD BIAS.
         
-        Returns dict with:
-            - confluence_score: 0-1, how many timeframes agree
-            - daily_trend: 'UP', 'DOWN', 'RANGING'
-            - hourly_trend: 'UP', 'DOWN', 'RANGING'
-            - 15min_trend: 'UP', 'DOWN', 'RANGING'
-            - momentum_alignment: bool - higher timeframes support signal
-            - support_resistance: dict of key levels
-            - confidence_multiplier: 0.5-1.5, adjust AI confidence by this
+        CRITICAL FIX: Analyze the PREVIOUS bar, not the current bar.
+        Current bar is incomplete (still trading).
         """
+        if len(df) < ema_slow + self.delay_bars:
+            return TimeframeSignal(
+                timeframe=timeframe,
+                signal="HOLD",
+                strength=0.0,
+                price=df["close"].iloc[-1],
+                trend="RANGING",
+                rsi=50.0,
+                ema_short=0.0,
+                ema_long=0.0,
+            )
         
-        daily_trend = self._detect_trend(df_daily)
-        hourly_trend = self._detect_trend(df_hourly)
-        tf15_trend = self._detect_trend(df_15min)
+        # ✅ CRITICAL: Use PREVIOUS bar (completed bar), not current
+        # This eliminates lookahead bias completely
+        df_delayed = df.iloc[:-self.delay_bars]
         
-        # Calculate support/resistance levels
-        support, resistance = self._find_key_levels(df_daily)
+        close = df_delayed["close"].iloc[-1]
+        rsi = Indicators.rsi(df_delayed["close"], rsi_period).iloc[-1]
+        ema_fast_val = Indicators.ema(df_delayed["close"], ema_fast).iloc[-1]
+        ema_slow_val = Indicators.ema(df_delayed["close"], ema_slow).iloc[-1]
         
-        # Check momentum alignment
-        daily_momentum = self._get_momentum(df_daily)
-        hourly_momentum = self._get_momentum(df_hourly)
+        trend = MarketRegime.detect_trend(df_delayed)
         
-        confluence_score = self._calculate_confluence(
-            signal_direction,
-            daily_trend,
-            hourly_trend,
-            tf15_trend,
-            daily_momentum,
-            hourly_momentum,
+        # Generate signal from historical (completed) data only
+        signal = "HOLD"
+        strength = 0.0
+        
+        if trend == "UPTREND":
+            # In uptrend, look for RSI bouncing off support
+            if 30 < rsi < 50:
+                signal = "BUY"
+                strength = (50 - rsi) / 20.0  # Higher when RSI is very low
+            elif rsi > 70:
+                signal = "SELL"
+                strength = (rsi - 70) / 20.0
+        
+        elif trend == "DOWNTREND":
+            if rsi > 50 and rsi < 70:
+                signal = "SELL"
+                strength = (rsi - 50) / 20.0
+            elif rsi < 30:
+                signal = "BUY"
+                strength = (30 - rsi) / 30.0
+        
+        else:  # RANGING
+            if rsi < 30:
+                signal = "BUY"
+                strength = 0.5
+            elif rsi > 70:
+                signal = "SELL"
+                strength = 0.5
+        
+        return TimeframeSignal(
+            timeframe=timeframe,
+            signal=signal,
+            strength=min(strength, 1.0),
+            price=close,  # ✅ Closed bar price, not current incomplete bar
+            trend=trend,
+            rsi=rsi,
+            ema_short=ema_fast_val,
+            ema_long=ema_slow_val,
+        )
+    
+    def analyze_all(self) -> Dict[str, TimeframeSignal]:
+        """
+        Analyze all loaded timeframes.
+        
+        Returns:
+            Dictionary mapping timeframe -> TimeframeSignal
+        """
+        self.signals = {}
+        
+        for tf in self.primary_timeframes:
+            if tf in self.data:
+                signal = self.analyze_single_timeframe(tf, self.data[tf])
+                self.signals[tf] = signal
+        
+        return self.signals
+    
+    def get_combined_signal(self) -> Literal["BUY", "HOLD", "SELL"]:
+        """
+        Combine signals from multiple timeframes.
+        
+        Higher timeframe (4h) has veto power:
+        - If 4h is downtrend, only take 1h pullback (not full reversal)
+        - If 4h is uptrend, 1h pullback is strong BUY
+        
+        Returns:
+            Combined signal: "BUY", "HOLD", or "SELL"
+        """
+        if not self.signals:
+            return "HOLD"
+        
+        # Sort by actual duration (longest timeframe first).
+        active_signals = sorted(
+            ((tf, signal) for tf, signal in self.signals.items() if signal is not None),
+            key=lambda item: self._timeframe_to_minutes(item[0]),
+            reverse=True,
         )
         
-        # Confidence multiplier: 0.5 (bad confluence) to 1.5 (excellent confluence)
-        multiplier = 0.5 + (confluence_score * 1.0)  # 0.5 + (0-1)*1.0 → 0.5-1.5
+        if not active_signals:
+            return "HOLD"
         
-        # Special case: if price is near support/resistance on daily, more likely to reverse
-        reverse_prob = self._estimate_reversal_probability(
-            df_15min, df_daily, signal_direction, support, resistance
-        )
+        # Highest timeframe (regime/macro)
+        highest_tf, highest_signal = active_signals[0]
+        if not highest_signal:
+            return "HOLD"
         
-        return {
-            "confluence_score": confluence_score,
-            "daily_trend": daily_trend,
-            "hourly_trend": hourly_trend,
-            "15min_trend": tf15_trend,
-            "momentum_alignment": confluence_score >= 0.6,
-            "support_resistance": {"support": support, "resistance": resistance},
-            "confidence_multiplier": multiplier,
-            "reversal_probability": reverse_prob,
-            "signal_quality": "EXCELLENT" if confluence_score >= 0.8
-                             else "GOOD" if confluence_score >= 0.6
-                             else "FAIR" if confluence_score >= 0.4
-                             else "POOR",
-        }
+        macro_trend = highest_signal.trend
+        
+        # Secondary timeframe (entry confirmation)
+        if len(active_signals) > 1:
+            second_tf, second_signal = active_signals[1]
+            if not second_signal:
+                return "HOLD"
+            
+            # In uptrend on higher tf, we accept BUY from lower tf
+            if macro_trend == "UPTREND" and second_signal.signal == "BUY":
+                return "BUY"
+            
+            # In downtrend on higher tf, we accept SELL from lower tf
+            if macro_trend == "DOWNTREND" and second_signal.signal == "SELL":
+                return "SELL"
+            
+            # Only respond to highest TF signal in ranging market
+            if macro_trend == "RANGING" and highest_signal.signal in ["BUY", "SELL"]:
+                return highest_signal.signal
+        
+        return "HOLD"
     
-    @staticmethod
-    def _detect_trend(df: pd.DataFrame, fast_period: int = 9, slow_period: int = 21) -> str:
-        """Detect trend using EMA crossover."""
-        if len(df) < slow_period:
-            return "UNKNOWN"
+    def get_confluence_score(self) -> float:
+        """
+        Calculate how many timeframes agree on the signal.
         
-        fast_ema = df["close"].ewm(span=fast_period).mean()
-        slow_ema = df["close"].ewm(span=slow_period).mean()
+        Higher = more reliable signal.
         
-        angle = (fast_ema.iloc[-1] - slow_ema.iloc[-1]) / slow_ema.iloc[-1]
-        
-        if angle > 0.005:  # >0.5% above
-            return "UP"
-        elif angle < -0.005:  # <-0.5% below
-            return "DOWN"
-        else:
-            return "RANGING"
-    
-    @staticmethod
-    def _get_momentum(df: pd.DataFrame, period: int = 14) -> float:
-        """Calculate momentum as ROC (Rate of Change)."""
-        if len(df) < period:
+        Returns:
+            Score from 0.0 to 1.0
+        """
+        if not self.signals or len(self.signals) < 2:
             return 0.0
         
-        roc = ((df["close"].iloc[-1] - df["close"].iloc[-period]) / df["close"].iloc[-period]) * 100
-        return roc
+        combined = self.get_combined_signal()
+        if combined == "HOLD":
+            return 0.0
+        
+        # Count how many timeframes agree
+        agreement = sum(
+            1 for signal in self.signals.values()
+            if signal.signal == combined
+        )
+        
+        return agreement / max(len(self.signals), 1)
     
-    @staticmethod
-    def _find_key_levels(df: pd.DataFrame, lookback: int = 30) -> Tuple[float, float]:
-        """Find support (20th percentile of recent lows) and resistance (80th percentile of highs)."""
-        if len(df) < lookback:
-            return df["low"].min(), df["high"].max()
+    def get_summary(self) -> str:
+        """Get human-readable summary of multi-timeframe analysis."""
+        if not self.signals:
+            return "No data available"
         
-        recent = df.tail(lookback)
-        support = recent["low"].quantile(0.2)
-        resistance = recent["high"].quantile(0.8)
+        lines = ["=== Multi-Timeframe Analysis ==="]
         
-        return float(support), float(resistance)
-    
-    @staticmethod
-    def _calculate_confluence(
-        signal_direction: str,
-        daily_trend: str,
-        hourly_trend: str,
-        tf15_trend: str,
-        daily_momentum: float,
-        hourly_momentum: float,
-    ) -> float:
-        """
-        Calculate confluence score (0-1).
-        
-        Perfect confluence: signal aligns with all three timeframes and momentum is positive.
-        """
-        score = 0.0
-        
-        # BUY signal alignment
-        if signal_direction == "BUY":
-            if daily_trend == "UP":
-                score += 0.25
-            if hourly_trend == "UP" or hourly_trend == "RANGING":  # Hourly can be ranging if daily is up
-                score += 0.20
-            if tf15_trend == "UP":
-                score += 0.15
-            if daily_momentum > 1.0:  # Daily up >1% recently
-                score += 0.15
-            if hourly_momentum > 0.5:  # Hourly up >0.5% recently
-                score += 0.10
-            if daily_trend == "DOWN":  # Divergence penalty
-                score -= 0.10
-        
-        # SELL signal alignment
-        elif signal_direction == "SELL":
-            if daily_trend == "DOWN":
-                score += 0.25
-            if hourly_trend == "DOWN" or hourly_trend == "RANGING":
-                score += 0.20
-            if tf15_trend == "DOWN":
-                score += 0.15
-            if daily_momentum < -1.0:  # Daily down >1% recently
-                score += 0.15
-            if hourly_momentum < -0.5:  # Hourly down >0.5% recently
-                score += 0.10
-            if daily_trend == "UP":  # Divergence penalty
-                score -= 0.10
-        
-        # Clamp to 0-1
-        return max(0.0, min(1.0, score))
-    
-    @staticmethod
-    def _estimate_reversal_probability(
-        df_15min: pd.DataFrame,
-        df_daily: pd.DataFrame,
-        signal_direction: str,
-        support: float,
-        resistance: float,
-    ) -> float:
-        """
-        Estimate probability that price will reverse based on proximity to S/R.
-        
-        High near support (on BUY) = higher reversal prob (less risky)
-        High near resistance (on SELL) = higher reversal prob (less risky)
-        """
-        current_price = df_15min["close"].iloc[-1]
-        daily_ma = df_daily["close"].ewm(span=20).mean().iloc[-1]
-        
-        if signal_direction == "BUY":
-            # How close are we to support relative to day's range?
-            day_range = df_daily["high"].iloc[-1] - df_daily["low"].iloc[-1]
-            distance_to_support = current_price - support
+        for tf in self.primary_timeframes:
+            if tf not in self.signals:
+                continue
             
-            if day_range > 0:
-                proximity = distance_to_support / day_range
-                prob = max(0.0, min(1.0, 1.0 - proximity))  # Close to support = high prob
-            else:
-                prob = 0.5
+            sig = self.signals[tf]
+            lines.append(
+                f"{tf:>5} | {sig.signal:5} | {sig.trend:10} | "
+                f"RSI:{sig.rsi:6.1f} | Strength:{sig.strength:.1%}"
+            )
         
-        else:  # SELL
-            # How close are we to resistance?
-            day_range = df_daily["high"].iloc[-1] - df_daily["low"].iloc[-1]
-            distance_to_resistance = resistance - current_price
-            
-            if day_range > 0:
-                proximity = distance_to_resistance / day_range
-                prob = max(0.0, min(1.0, 1.0 - proximity))  # Close to resistance = high prob
-            else:
-                prob = 0.5
+        combined = self.get_combined_signal()
+        confluence = self.get_confluence_score()
+        lines.append(f"\n📊 Combined Signal: {combined} (Confluence: {confluence:.0%})")
         
-        return prob
+        return "\n".join(lines)
 
 
-class TimeframeDataManager:
-    """Helper to fetch and align OHLCV data across timeframes."""
+class TimeframeFilter:
+    """Filter trades based on multi-timeframe regime."""
     
     @staticmethod
-    def resample_to_hourly(df_15min: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate 15-min bars to 1-hour bars."""
-        if len(df_15min) == 0:
-            return df_15min.copy()
+    def is_trend_aligned(analyzer: MultiTimeframeAnalyzer, direction: str) -> bool:
+        """
+        Check if trade direction aligns with market trend.
         
-        # Set index to datetime if it's not already
-        df = df_15min.copy()
-        if "time" in df.columns:
-            df["datetime"] = pd.to_datetime(df["time"])
-            df.set_index("datetime", inplace=True)
-        elif not isinstance(df.index, pd.DatetimeIndex):
-            return df  # Can't resample without time index
+        Args:
+            analyzer: MultiTimeframeAnalyzer instance
+            direction: "BUY" or "SELL"
         
-        # Resample OHLCV
-        hourly = df.resample("1H").agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-        })
+        Returns:
+            True if aligned with multi-timeframe trend
+        """
+        if not analyzer.signals:
+            return True  # No data, allow trade
         
-        return hourly.dropna()
-    
-    @staticmethod
-    def resample_to_daily(df_15min: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate 15-min bars to daily bars."""
-        if len(df_15min) == 0:
-            return df_15min.copy()
+        # Check highest available timeframe trend by duration, not hardcoded order.
+        ordered = sorted(
+            ((tf, sig) for tf, sig in analyzer.signals.items() if sig is not None),
+            key=lambda item: MultiTimeframeAnalyzer._timeframe_to_minutes(item[0]),
+            reverse=True,
+        )
+        first_tf_signal = ordered[0][1] if ordered else None
         
-        df = df_15min.copy()
-        if "time" in df.columns:
-            df["datetime"] = pd.to_datetime(df["time"])
-            df.set_index("datetime", inplace=True)
-        elif not isinstance(df.index, pd.DatetimeIndex):
-            return df
+        if not first_tf_signal:
+            return True
         
-        daily = df.resample("1D").agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-        })
+        if direction == "BUY":
+            return first_tf_signal.trend in ["UPTREND", "RANGING"]
+        elif direction == "SELL":
+            return first_tf_signal.trend in ["DOWNTREND", "RANGING"]
         
-        return daily.dropna()
+        return True
