@@ -1536,6 +1536,17 @@ class StockTradingBot:
                             # Send Discord notification
                             if discord:
                                 discord.notify_buy(symbol, price, qty, ai_confidence)
+                else:
+                    if signal != "BUY":
+                        self.logger.info(
+                            f"[{symbol}] HOLD | reason={sig_details.reason} | "
+                            f"grade={sig_details.trade_grade} score={sig_details.quality_score:.1f}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[{symbol}] BUY filtered by AI confidence: "
+                            f"{ai_confidence:.2f} <= {effective_min_ai_confidence:.2f}"
+                        )
             elif pos.active:
                 self.logger.debug(f"[{symbol}] ${price:.2f} TP=${pos.take_profit:.2f} TS=${pos.trailing_stop:.2f}")
             else:

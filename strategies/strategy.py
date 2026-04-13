@@ -72,13 +72,14 @@ class NoTradeZone:
 
     @staticmethod
     def evaluate(df: pd.DataFrame) -> tuple[bool, str]:
-        if len(df) < 80:
+        # Intraday feeds may provide fewer than 80 bars early in session.
+        if len(df) < 20:
             return True, "Insufficient context"
 
         close = df["close"].iloc[-1]
         atr = Indicators.atr(df, 14).iloc[-1]
         atr_pct = (atr / close) * 100
-        if atr_pct < 0.35:
+        if atr_pct < 0.20:
             return True, "Low volatility zone"
 
         ema9 = Indicators.ema(df["close"], 9).iloc[-1]
@@ -236,7 +237,8 @@ class BaseStrategy(ABC):
         )
 
     def get_signal(self, df: pd.DataFrame) -> StrategySignal:
-        if len(df) < 200:
+        # Keep warmup aligned with live intraday bars so strategy can activate.
+        if len(df) < 20:
             return StrategySignal(
                 signal="HOLD",
                 confidence=0.0,
@@ -278,9 +280,9 @@ class BaseStrategy(ABC):
             signal.quality_score = quality_score
             signal.trade_grade = grade
 
-            # Final edge gate: execute only A+ setups.
-            if grade != "A+":
-                return self._block_signal(signal, f"Rejected non-A+ setup ({grade}, score={quality_score:.1f})")
+            # Final edge gate: execute B and A+ setups.
+            if grade not in ("A+", "B"):
+                return self._block_signal(signal, f"Rejected low-grade setup ({grade}, score={quality_score:.1f})")
 
         return signal
 
