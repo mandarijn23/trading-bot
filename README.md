@@ -69,6 +69,17 @@ Use the dashboard and logs to review live behavior:
 - `tools/rotate_stock_profile.sh` for the 2-day aggressive / 2-day normal profile cycle
 - `tools/daily_profile_graph.sh` for the daily profile rotation plus graph push
 
+## Query CLI
+
+Use the Week 2 persistence database to inspect results quickly:
+
+- `python observability/query_cli.py --db data/trades.db daily`
+- `python observability/query_cli.py --db data/trades.db strategy RSI_2MA`
+- `python observability/query_cli.py --db data/trades.db slippage`
+- `python observability/query_cli.py --db data/trades.db trades SPY --since 2026-04-01`
+- `python observability/query_cli.py --db data/trades.db reconcile`
+- Add `--json` to any command for machine-readable output
+
 ## Safety Notes
 
 - Start in paper trading mode.
@@ -81,4 +92,5 @@ Use the dashboard and logs to review live behavior:
 - [Setup guide](docs/setup.md)
 - [Monitoring guide](docs/monitoring.md)
 - [Dashboard guide](docs/dashboard.md)
+- [Master to-do checklist](docs/MASTER_TODO.md)
 

@@ -179,13 +179,82 @@ class TradeRecordRepository:
             row = conn.execute("SELECT * FROM trades WHERE trade_id = ?", (int(trade_id),)).fetchone()
         return dict(row) if row else None
 
-    def get_trades_by_symbol(self, symbol: str, limit: int = 1000) -> list[dict[str, Any]]:
+    def get_trades_by_symbol(
+        self,
+        symbol: str,
+        since: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
         with self.store.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM trades WHERE symbol = ? ORDER BY entry_time DESC LIMIT ?",
-                (str(symbol).upper(), int(limit)),
-            ).fetchall()
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM trades
+                    WHERE symbol = ? AND datetime(entry_time) >= datetime(?)
+                    ORDER BY entry_time DESC
+                    LIMIT ?
+                    """,
+                    (str(symbol).upper(), str(since), int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM trades WHERE symbol = ? ORDER BY entry_time DESC LIMIT ?",
+                    (str(symbol).upper(), int(limit)),
+                ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_slippage_analysis(self, since: str | None = None) -> dict[str, Any]:
+        """Aggregate slippage cost metrics from closed trades."""
+        with self.store.connect() as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT entry_price, actual_slippage, backtest_slippage_assumption
+                    FROM trades
+                    WHERE actual_slippage IS NOT NULL
+                      AND datetime(entry_time) >= datetime(?)
+                    """,
+                    (str(since),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT entry_price, actual_slippage, backtest_slippage_assumption
+                    FROM trades
+                    WHERE actual_slippage IS NOT NULL
+                    """
+                ).fetchall()
+
+        if not rows:
+            return {
+                "sample_count": 0,
+                "avg_slippage": 0.0,
+                "avg_slippage_bps": 0.0,
+                "total_slippage": 0.0,
+                "total_adverse_slippage": 0.0,
+                "total_favorable_slippage": 0.0,
+                "assumed_total_slippage": 0.0,
+                "slippage_variance": 0.0,
+            }
+
+        slippages = [float(r["actual_slippage"] or 0.0) for r in rows]
+        entry_prices = [max(float(r["entry_price"] or 0.0), 1e-9) for r in rows]
+        assumed = [float(r["backtest_slippage_assumption"] or 0.0) for r in rows]
+
+        bps_values = [(s / p) * 10000.0 for s, p in zip(slippages, entry_prices)]
+        total_slippage = sum(slippages)
+        assumed_total = sum(assumed)
+
+        return {
+            "sample_count": len(rows),
+            "avg_slippage": total_slippage / len(rows),
+            "avg_slippage_bps": sum(bps_values) / len(rows),
+            "total_slippage": total_slippage,
+            "total_adverse_slippage": sum(s for s in slippages if s > 0),
+            "total_favorable_slippage": sum(s for s in slippages if s < 0),
+            "assumed_total_slippage": assumed_total,
+            "slippage_variance": total_slippage - assumed_total,
+        }
 
     def get_trades_by_date(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
         with self.store.connect() as conn:
