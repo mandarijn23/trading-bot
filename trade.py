@@ -11,6 +11,10 @@ import sys
 import os
 import subprocess
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
 
 
 def print_header() -> None:
